@@ -205,6 +205,17 @@ struct CliArgs {
     batch_games: Option<Vec<GameSpec>>,
 }
 
+/// Shared immutable inputs for one or more AI-commander game runs.
+#[derive(Clone, Copy)]
+struct GameRunContext<'a> {
+    db: &'a CardDatabase,
+    payload: &'a DeckPayload,
+    seat_difficulty: &'a [Option<AiDifficulty>; 4],
+    action_cap: usize,
+    dump_log_path: Option<&'a str>,
+    dump_actions_path: Option<&'a str>,
+}
+
 /// Everything that isn't argument parsing: loads the card database and feed
 /// once, resolves the shared deck payload once, then either plays one game
 /// (`batch_games.is_none()`, the pre-existing single-game path — its stdout is
@@ -265,22 +276,20 @@ fn run(cli: CliArgs) -> i32 {
     // per-game dump paths is out of scope for the batching change itself.
     let dump_log_path = read_dump_env("PHASE_DUMP_LOG");
     let dump_actions_path = read_dump_env("PHASE_DUMP_ACTIONS");
-    let dump_paths = DumpPaths {
-        log_path: dump_log_path.as_deref(),
-        actions_path: dump_actions_path.as_deref(),
-    };
 
     match batch_games {
         None => {
-            let outcome = play_one_game(
-                &db,
-                &payload,
-                seed,
-                difficulty,
-                &seat_difficulty,
+            // `payload` is the process-level default feed's, resolved once
+            // above — the only feed single-game mode ever uses.
+            let context = GameRunContext {
+                db: &db,
+                payload: &payload,
+                seat_difficulty: &seat_difficulty,
                 action_cap,
-                dump_paths,
-            );
+                dump_log_path: dump_log_path.as_deref(),
+                dump_actions_path: dump_actions_path.as_deref(),
+            };
+            let outcome = play_one_game(&context, seed, difficulty);
             match outcome {
                 RunOutcome::Completed => 0,
                 RunOutcome::Aborted => 2,
@@ -337,15 +346,19 @@ fn run(cli: CliArgs) -> i32 {
                         resolve_feed_payload(&db, &cards_path, effective_feed)
                     });
 
-                    play_one_game(
-                        &db,
-                        &game_payload,
-                        seed,
-                        seat_diff,
-                        &seat_difficulty,
+                    // Built fresh per game (not shared like single-game mode's
+                    // `context` above): `payload` is this game's own
+                    // resolved feed, which — unlike the single-game path's
+                    // fixed default — varies line to line.
+                    let context = GameRunContext {
+                        db: &db,
+                        payload: &game_payload,
+                        seat_difficulty: &seat_difficulty,
                         action_cap,
-                        dump_paths,
-                    );
+                        dump_log_path: dump_log_path.as_deref(),
+                        dump_actions_path: dump_actions_path.as_deref(),
+                    };
+                    play_one_game(&context, seed, seat_diff);
                     // Immediate per-game flush (Tier 1 item 3): if the process
                     // is killed mid-batch (e.g. pod-lab's external wall-clock
                     // timeout on a hung game), every already-completed game's
@@ -535,18 +548,6 @@ impl FeedPayloadCache {
     }
 }
 
-/// Optional debug-dump destinations for one game's play-through (see
-/// `read_dump_env`). Bundled into one `Copy` param — rather than two loose
-/// `Option<&str>` args — purely to keep `play_one_game` under clippy's
-/// argument-count lint; `log_path` and `actions_path` are always passed
-/// together as a pair from `run`, resolved once per process and shared by
-/// every game (single or batched).
-#[derive(Clone, Copy)]
-struct DumpPaths<'a> {
-    log_path: Option<&'a str>,
-    actions_path: Option<&'a str>,
-}
-
 /// Drives one complete game: builds a fresh `GameState` from `payload` at
 /// `seed`, resolves per-seat difficulty, runs the AI driver loop to
 /// completion/cap/stall, and prints the exact `=== RESULT ===` epilogue the
@@ -556,16 +557,20 @@ struct DumpPaths<'a> {
 /// caller can keep looping instead of exiting on this game's outcome). Called
 /// once for the single-game path and once per line for `--games-file` batch
 /// mode — the SAME function drives both, so batching can never change what one
-/// game's play-through does or prints.
-fn play_one_game(
-    db: &CardDatabase,
-    payload: &DeckPayload,
-    seed: u64,
-    difficulty: AiDifficulty,
-    seat_difficulty: &[Option<AiDifficulty>; 4],
-    action_cap: usize,
-    dump_paths: DumpPaths<'_>,
-) -> RunOutcome {
+/// game's play-through does or prints. Takes a `GameRunContext` (rather than
+/// its six fields loose) both to stay under clippy's argument-count lint and
+/// because `payload` now varies per call in batch mode (per-line feed
+/// override, see `run`) — callers build a fresh `GameRunContext` per game
+/// rather than sharing one for the whole batch.
+fn play_one_game(context: &GameRunContext<'_>, seed: u64, difficulty: AiDifficulty) -> RunOutcome {
+    let GameRunContext {
+        db,
+        payload,
+        seat_difficulty,
+        action_cap,
+        dump_log_path,
+        dump_actions_path,
+    } = *context;
     let mut state = build_game_state(db, payload, seed);
 
     engine::game::engine::start_game(&mut state);
@@ -616,12 +621,12 @@ fn play_one_game(
         &ai_session,
         action_cap,
         &mut |results, state, total_before| {
-            if dump_paths.log_path.is_some() {
+            if dump_log_path.is_some() {
                 for r in &mut *results {
                     game_log.extend(std::mem::take(&mut r.log_entries));
                 }
             }
-            if dump_paths.actions_path.is_some() {
+            if dump_actions_path.is_some() {
                 for r in &*results {
                     actions_log.push(format!("{:?}", r.action));
                 }
@@ -780,11 +785,11 @@ fn play_one_game(
         );
     }
 
-    if let Some(path) = dump_paths.actions_path {
+    if let Some(path) = dump_actions_path {
         std::fs::write(path, actions_log.join("\n")).expect("write actions dump");
         println!("Dumped {} actions to {path}", actions_log.len());
     }
-    if let Some(path) = dump_paths.log_path {
+    if let Some(path) = dump_log_path {
         let json = serde_json::to_string(&game_log).expect("serialize game log");
         std::fs::write(path, json).expect("write game log dump");
         println!("Dumped {} game-log entries to {path}", game_log.len());
