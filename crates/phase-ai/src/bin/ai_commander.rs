@@ -266,8 +266,15 @@ fn run(cli: CliArgs) -> i32 {
 
     // Resolves the process-level default feed exactly once, same as before
     // per-line feed overrides existed — this IS the single-game path's (and a
-    // batch line without a 3rd field's) deck payload.
-    let payload: DeckPayload = resolve_feed_payload(&db, &cards_path, &feed);
+    // batch line without a 3rd field's) deck payload. A bad default feed is
+    // process-fatal here (matching every other startup-time validation in
+    // this file: `parse_difficulty`, `parse_action_cap`, `parse_games_file`)
+    // — it's resolved before any game starts, on either path, so there is no
+    // partial batch progress to preserve by treating it any more gently.
+    let payload: DeckPayload = resolve_feed_payload(&db, &cards_path, &feed).unwrap_or_else(|e| {
+        eprintln!("{e}");
+        std::process::exit(1);
+    });
 
     // Read once — shared for the whole process (including every game in a
     // batch). NOTE: in `--games-file` mode, if these are set, each game's dump
@@ -332,18 +339,25 @@ fn run(cli: CliArgs) -> i32 {
 
                     // The line's own feed if it specified one, else the
                     // process-level default. A feed that fails to resolve
-                    // (missing file, bad JSON, fewer than 4 valid precons)
-                    // hard-fails the whole process via the same
-                    // `std::process::exit(1)` `resolve_feed_payload` always
-                    // used for the default feed — deliberately NOT caught
-                    // per-game like a game panic is, so a garbled feed path
-                    // stays exactly as loud in batch mode as it already is in
-                    // single-game mode. The marker + echo above are already
-                    // flushed, so the harness can still attribute the exit to
-                    // this seed.
+                    // (missing file, bad JSON, missing/malformed `decks`,
+                    // fewer than 4 valid precons) is per-game-fatal, not
+                    // process-fatal: `resolve_feed_payload` returns `Err`
+                    // here, and panicking on it routes the failure through
+                    // `run_batch_isolated`'s existing `catch_unwind`, landing
+                    // as an attributable `GAME <seed> PANICKED: <message>`
+                    // chunk — exactly like any other per-game panic — so one
+                    // typo'd feed path in a 250-game batch costs exactly that
+                    // one game, never the rest. This deliberately differs
+                    // from the process-level default feed above (resolved
+                    // once, before any game starts, with no partial batch
+                    // progress to protect) and from single-game mode (no
+                    // batch to protect at all). The marker + echo above are
+                    // already flushed, so the harness can still attribute
+                    // either outcome to this seed.
                     let effective_feed = feed_path.as_deref().unwrap_or(&feed);
                     let game_payload = feed_cache.get_or_resolve(effective_feed, || {
                         resolve_feed_payload(&db, &cards_path, effective_feed)
+                            .unwrap_or_else(|e| panic!("{e}"))
                     });
 
                     // Built fresh per game (not shared like single-game mode's
@@ -387,19 +401,31 @@ fn run(cli: CliArgs) -> i32 {
 /// function that can run more than once means every additional feed a batch
 /// resolves gets the same operator-visible diagnostics the process-level
 /// feed always got, not silent construction.
-fn resolve_feed_payload(db: &CardDatabase, cards_path: &str, feed: &str) -> DeckPayload {
+///
+/// Returns `Err` (a human-readable message, never partial output) for every
+/// way a feed can be unusable — missing/unreadable file, malformed JSON,
+/// missing `decks`/`main` arrays, malformed deck entries, or fewer than 4
+/// valid precons — uniformly, rather than mixing `std::process::exit` and
+/// `panic!`/`.unwrap()` internally. What a caller DOES with that `Err` is
+/// deliberately NOT this function's decision: the process-level default feed
+/// (resolved once in `run`, before any game starts on either path) unwraps
+/// it into a fatal `std::process::exit(1)`, while a batch line's own feed
+/// override unwraps it into a `panic!` so `run_batch_isolated` can isolate
+/// the failure to that one game (see the call sites in `run`).
+fn resolve_feed_payload(
+    db: &CardDatabase,
+    cards_path: &str,
+    feed: &str,
+) -> Result<DeckPayload, String> {
     let feed_path = PathBuf::from(cards_path).join(feed);
-    let feed_file = match std::fs::File::open(&feed_path) {
-        Ok(f) => f,
-        Err(e) => {
-            eprintln!("failed to open {}: {e}", feed_path.display());
-            std::process::exit(1);
-        }
-    };
-    let feed_json: serde_json::Value =
-        serde_json::from_reader(feed_file).expect("feed is not valid JSON");
+    let feed_file = std::fs::File::open(&feed_path)
+        .map_err(|e| format!("failed to open {}: {e}", feed_path.display()))?;
+    let feed_json: serde_json::Value = serde_json::from_reader(feed_file)
+        .map_err(|e| format!("feed {} is not valid JSON: {e}", feed_path.display()))?;
 
-    let decks_json = feed_json["decks"].as_array().expect("feed.decks missing");
+    let decks_json = feed_json["decks"]
+        .as_array()
+        .ok_or_else(|| format!("feed {}: `decks` array missing", feed_path.display()))?;
 
     let mut deck_lists: Vec<PlayerDeckList> = Vec::new();
     // Commander names are populated in PlayerDeckList.commander and resolved
@@ -416,8 +442,15 @@ fn resolve_feed_payload(db: &CardDatabase, cards_path: &str, feed: &str) -> Deck
         let cmd_names: Vec<String> = match deck["commander"].as_array() {
             Some(arr) if !arr.is_empty() => arr
                 .iter()
-                .map(|v| v.as_str().unwrap().to_string())
-                .collect(),
+                .map(|v| {
+                    v.as_str().map(str::to_string).ok_or_else(|| {
+                        format!(
+                            "feed {}: deck {deck_name:?} has a non-string commander name",
+                            feed_path.display()
+                        )
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?,
             _ => vec![deck_name.to_string()],
         };
         let primary_cmd = cmd_names[0].clone();
@@ -427,10 +460,26 @@ fn resolve_feed_payload(db: &CardDatabase, cards_path: &str, feed: &str) -> Deck
             continue;
         }
 
+        let main_json = deck["main"].as_array().ok_or_else(|| {
+            format!(
+                "feed {}: deck {deck_name:?} missing `main` array",
+                feed_path.display()
+            )
+        })?;
         let mut main: Vec<String> = Vec::new();
-        for entry in deck["main"].as_array().unwrap() {
-            let n = entry["name"].as_str().unwrap();
-            let count = entry["count"].as_u64().unwrap() as usize;
+        for entry in main_json {
+            let n = entry["name"].as_str().ok_or_else(|| {
+                format!(
+                    "feed {}: deck {deck_name:?} has a main entry with a non-string name",
+                    feed_path.display()
+                )
+            })?;
+            let count = entry["count"].as_u64().ok_or_else(|| {
+                format!(
+                    "feed {}: deck {deck_name:?} entry {n:?} has a non-numeric count",
+                    feed_path.display()
+                )
+            })? as usize;
             if cmd_names.iter().any(|c| c == n) {
                 continue;
             }
@@ -452,8 +501,11 @@ fn resolve_feed_payload(db: &CardDatabase, cards_path: &str, feed: &str) -> Deck
     }
 
     if deck_lists.len() < 4 {
-        eprintln!("need at least 4 precons, found {}", deck_lists.len());
-        std::process::exit(1);
+        return Err(format!(
+            "feed {}: need at least 4 precons, found {}",
+            feed_path.display(),
+            deck_lists.len()
+        ));
     }
 
     let deck_list = DeckList {
@@ -482,7 +534,7 @@ fn resolve_feed_payload(db: &CardDatabase, cards_path: &str, feed: &str) -> Deck
     }
     println!();
 
-    payload
+    Ok(payload)
 }
 
 /// Bounded least-recently-used cache of resolved deck payloads, keyed by feed
