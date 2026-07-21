@@ -1,7 +1,10 @@
 //! Subprocess-level regression tests for `ai-commander`'s `--games-file` batch
 //! mode: a batch invocation's per-game output must match the single-game
-//! invocation of the same seed+difficulty, byte-for-byte outside the one
-//! inherently nondeterministic field (wall-clock elapsed time). These spawn the
+//! invocation of the same seed+difficulty+feed, byte-for-byte outside the one
+//! inherently nondeterministic field (wall-clock elapsed time). That includes
+//! the per-line feed override (pod-lab simulation-acceleration plan, Tier 1
+//! follow-up: each `--games-file` line may resolve its own feed, not just its
+//! own seed/difficulty). These spawn the
 //! real `ai-commander` binary rather than calling `run()` in-process, so what is
 //! under test is the binary's actual contract with the pod-lab harness —
 //! argument parsing, per-game stdout framing, flush timing, process exit — not
@@ -13,7 +16,7 @@
 //! `greasefang_bounded.rs`/`whitemane_lion_bounded.rs`. Opt in via
 //! `cargo test -p phase-ai --test ai_commander_batch_equivalence -- --ignored`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Resolves `client/public` the same way `greasefang_bounded.rs` et al. do: a
@@ -35,6 +38,31 @@ fn cards_dir() -> PathBuf {
 /// for equivalence — only that a given seed+feed+cap combination reaches the
 /// SAME outcome deterministically, single-game or batched.
 const TEST_ACTION_CAP: &str = "300";
+
+/// Writes a second, deliberately different commander-style feed to `dest` by
+/// reversing the deck order of the checked-in default
+/// (`feeds/mtggoldfish-commander.json`), so the first 4 decks it yields are a
+/// different 4-deck table than the default feed's. Derived from the real feed
+/// rather than hand-written so its commanders/decklists are guaranteed to
+/// resolve against the same card-data.json these tests already require.
+///
+/// This is what proves per-line feed ROUTING, not just that the game engine is
+/// deterministic: if a batch line silently reused the wrong feed, the resulting
+/// game would diverge from the correct single-game run because it would be
+/// playing a completely different 4-deck table.
+fn write_reversed_feed(dest: &Path) {
+    let source = cards_dir().join("feeds").join("mtggoldfish-commander.json");
+    let mut feed: serde_json::Value = serde_json::from_reader(
+        std::fs::File::open(&source).unwrap_or_else(|e| panic!("open {}: {e}", source.display())),
+    )
+    .expect("mtggoldfish-commander.json is valid JSON");
+    feed["decks"]
+        .as_array_mut()
+        .expect("feed.decks is an array")
+        .reverse();
+    std::fs::write(dest, serde_json::to_string(&feed).unwrap())
+        .unwrap_or_else(|e| panic!("write {}: {e}", dest.display()));
+}
 
 /// Runs the real `ai-commander` binary with `cards_dir()` as its positional
 /// arg and `args` appended, and returns captured stdout as a `String`. Exit
@@ -68,10 +96,11 @@ fn run_ai_commander(args: &[&str]) -> String {
 /// Splits `stdout` into one chunk per game. Batch mode anchors on the
 /// `--- GAME ` marker: each chunk then runs from one game's own marker up to
 /// (not including) the next game's marker or EOF, so it's fully
-/// self-contained — critically, a game's marker + per-seat tier echo (all
-/// printed BEFORE that game's own "Game started." line) stay attributed to
-/// THAT game, not leaked onto the end of the previous one. Single-game mode
-/// never prints a marker, so the whole output is one chunk.
+/// self-contained — critically, a game's marker, per-seat tier echo, and any
+/// feed-resolve diagnostics (all printed BEFORE that game's own "Game started."
+/// line) stay attributed to THAT game, not leaked onto the end of the previous
+/// one. Single-game mode never prints a marker, so the whole output is one
+/// chunk.
 fn game_blocks(stdout: &str) -> Vec<&str> {
     const MARKER: &str = "--- GAME ";
     if !stdout.contains(MARKER) {
@@ -182,6 +211,103 @@ fn batched_third_game_matches_same_game_run_alone() {
         "the target game played 3rd in a batch must be bit-identical to the \
          same game run alone; a divergence here is the cross-game leak \
          (wall-clock-deadline non-determinism) regressing"
+    );
+}
+
+/// Per-line feed override end-to-end: a two-line batch whose lines name two
+/// DIFFERENT feeds must reproduce, block for block, the two single-game runs of
+/// the same seed+feed pairs. This is the routing guarantee — if a batch line
+/// silently fell back to the process-level `--feed` (or to the previously
+/// resolved feed still sitting in `FeedPayloadCache`), its game would be played
+/// against the wrong 4-deck table and its RESULT block would not match.
+///
+/// The single-game baselines go through `run_ai_commander`, which forces
+/// `PHASE_AI_MEASUREMENT` on: batch mode always routes to
+/// `RunContext::Measurement`, so a baseline left on the Interactive route would
+/// be comparing two different search configurations rather than two feeds.
+#[test]
+#[ignore = "loads card-data.json + runs real games; opt in via --ignored"]
+fn batch_per_line_feed_matches_single_game_across_two_feeds() {
+    let tmp = std::env::temp_dir();
+    let pid = std::process::id();
+    let feed_b_path = tmp.join(format!("ai_commander_batch_eq_feed_b_{pid}.json"));
+    write_reversed_feed(&feed_b_path);
+    let feed_b_arg = feed_b_path.to_str().expect("temp path is valid UTF-8");
+
+    let seed_a = "9001";
+    let seed_b = "9002";
+    let feed_a_arg = "feeds/mtggoldfish-commander.json";
+
+    // Single-game baselines, one per feed.
+    let single_a = run_ai_commander(&[
+        "--seed",
+        seed_a,
+        "--difficulty",
+        "Easy",
+        "--feed",
+        feed_a_arg,
+        "--action-cap",
+        TEST_ACTION_CAP,
+    ]);
+    let single_b = run_ai_commander(&[
+        "--seed",
+        seed_b,
+        "--difficulty",
+        "Easy",
+        "--feed",
+        feed_b_arg,
+        "--action-cap",
+        TEST_ACTION_CAP,
+    ]);
+
+    // One batch invocation, per-line feed override on each line — game 1
+    // names feed A explicitly, game 2 names feed B, proving a batch can mix
+    // distinct feeds across lines via the LRU-cached resolver.
+    let games_file_path = tmp.join(format!("ai_commander_batch_eq_games_{pid}.txt"));
+    std::fs::write(
+        &games_file_path,
+        format!("{seed_a},Easy,{feed_a_arg}\n{seed_b},Easy,{feed_b_arg}\n"),
+    )
+    .expect("write games-file");
+    let batch = run_ai_commander(&[
+        "--games-file",
+        games_file_path.to_str().unwrap(),
+        "--action-cap",
+        TEST_ACTION_CAP,
+    ]);
+
+    let _ = std::fs::remove_file(&feed_b_path);
+    let _ = std::fs::remove_file(&games_file_path);
+
+    let single_a_blocks = game_blocks(&single_a);
+    let single_b_blocks = game_blocks(&single_b);
+    let batch_blocks = game_blocks(&batch);
+
+    assert_eq!(
+        single_a_blocks.len(),
+        1,
+        "single-game A must print exactly one game"
+    );
+    assert_eq!(
+        single_b_blocks.len(),
+        1,
+        "single-game B must print exactly one game"
+    );
+    assert_eq!(
+        batch_blocks.len(),
+        2,
+        "batch must print exactly one block per games-file line"
+    );
+
+    assert_eq!(
+        normalized_result_block(single_a_blocks[0]),
+        normalized_result_block(batch_blocks[0]),
+        "batch game 1 (feed A via 3rd-field override) must match single-game A"
+    );
+    assert_eq!(
+        normalized_result_block(single_b_blocks[0]),
+        normalized_result_block(batch_blocks[1]),
+        "batch game 2 (feed B via 3rd-field override) must match single-game B"
     );
 }
 
