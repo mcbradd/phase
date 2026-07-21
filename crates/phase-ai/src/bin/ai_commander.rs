@@ -14,17 +14,21 @@
 //! Batch mode (pod-lab simulation-acceleration plan, Tier 1 item 1): play many
 //! games in one process instead of one process per game, amortizing the card
 //! database load (~1.8s/game measured) across the whole batch. `--games-file`
-//! points at a file of `seed,difficulty` lines (one game per line); when it is
-//! given, `--seed`/`--difficulty` are ignored and every line is played in turn
-//! against the SAME loaded database and feed. Each game's play-through is
-//! panic-isolated (`run_batch_isolated`) and its result is flushed to stdout
-//! immediately, so a batch survives an individual game panicking or the whole
-//! process being killed mid-batch (pod-lab enforces an external wall-clock
-//! timeout on the process).
+//! points at a file of `seed,difficulty[,feed_path]` lines (one game per
+//! line); when it is given, `--seed`/`--difficulty` are ignored. Every line
+//! plays against the SAME loaded database, but each line may resolve its own
+//! feed (pod-lab's gauntlet draws a fresh random opponent table per game) —
+//! a line without the 3rd field falls back to the process-level `--feed`.
+//! Resolved deck payloads are cached per feed path (bounded LRU, see
+//! `FeedPayloadCache`) so a batch that repeats a feed doesn't re-resolve it.
+//! Each game's play-through is panic-isolated (`run_batch_isolated`) and its
+//! result is flushed to stdout immediately, so a batch survives an
+//! individual game panicking or the whole process being killed mid-batch
+//! (pod-lab enforces an external wall-clock timeout on the process).
 //!   cargo run --release --bin ai-commander -- client/public --games-file games.txt
 
 use std::any::Any;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Write as _;
 use std::panic::PanicHookInfo;
 use std::path::PathBuf;
@@ -45,6 +49,14 @@ use rand::rngs::StdRng;
 use rand::SeedableRng;
 
 const DEFAULT_ACTION_CAP: usize = 200_000;
+
+/// Cap on the number of distinct resolved feed payloads `FeedPayloadCache`
+/// holds at once in `--games-file` batch mode. Gauntlet feeds are ~unique
+/// per game, so an unbounded cache is pure memory accumulation over a
+/// several-hundred-game worker batch; 32 is generous headroom for realistic
+/// feed-repeat locality (e.g. a few feeds reused back-to-back) without
+/// letting a long batch's memory grow with its length.
+const FEED_CACHE_CAPACITY: usize = 32;
 
 /// Stack size for the thread that actually drives games. Deep AI search
 /// recursion (even at Easy difficulty — directly reproduced this session:
@@ -132,7 +144,7 @@ fn main() {
     // startup discipline as `parse_difficulty`/`parse_action_cap`/
     // `parse_seat_override` above: a garbled batch file should fail before the
     // ~1.8s database load, not silently skip or misinterpret one line mid-batch.
-    let batch_games: Option<Vec<(u64, AiDifficulty)>> =
+    let batch_games: Option<Vec<GameSpec>> =
         games_file
             .as_deref()
             .map(|path| match parse_games_file(path) {
@@ -190,7 +202,7 @@ struct CliArgs {
     seat_difficulty: [Option<AiDifficulty>; 4],
     action_cap: usize,
     games_file: Option<String>,
-    batch_games: Option<Vec<(u64, AiDifficulty)>>,
+    batch_games: Option<Vec<GameSpec>>,
 }
 
 /// Everything that isn't argument parsing: loads the card database and feed
@@ -220,19 +232,6 @@ fn run(cli: CliArgs) -> i32 {
         }
     };
 
-    let feed_path = PathBuf::from(&cards_path).join(&feed);
-    let feed_file = match std::fs::File::open(&feed_path) {
-        Ok(f) => f,
-        Err(e) => {
-            eprintln!("failed to open {}: {e}", feed_path.display());
-            std::process::exit(1);
-        }
-    };
-    let feed_json: serde_json::Value =
-        serde_json::from_reader(feed_file).expect("feed is not valid JSON");
-
-    let decks_json = feed_json["decks"].as_array().expect("feed.decks missing");
-
     println!("=== 4-player Commander AI test ===");
     println!("Feed: {feed}");
     match &batch_games {
@@ -248,6 +247,146 @@ fn run(cli: CliArgs) -> i32 {
         None => println!("Seed: {seed}   Difficulty: {difficulty:?}"),
     }
     println!();
+    // Batch preamble flush (Tier 1 item 4): if the process hangs or dies
+    // while loading the default feed / the first game's own feed below, the
+    // harness has already seen this batch announce itself and how many games
+    // it holds, not silence.
+    let _ = std::io::stdout().flush();
+
+    // Resolves the process-level default feed exactly once, same as before
+    // per-line feed overrides existed — this IS the single-game path's (and a
+    // batch line without a 3rd field's) deck payload.
+    let payload: DeckPayload = resolve_feed_payload(&db, &cards_path, &feed);
+
+    // Read once — shared for the whole process (including every game in a
+    // batch). NOTE: in `--games-file` mode, if these are set, each game's dump
+    // overwrites the previous game's file at the same path (last game wins);
+    // pod-lab's harness does not set these env vars for batch runs, and fixing
+    // per-game dump paths is out of scope for the batching change itself.
+    let dump_log_path = read_dump_env("PHASE_DUMP_LOG");
+    let dump_actions_path = read_dump_env("PHASE_DUMP_ACTIONS");
+    let dump_paths = DumpPaths {
+        log_path: dump_log_path.as_deref(),
+        actions_path: dump_actions_path.as_deref(),
+    };
+
+    match batch_games {
+        None => {
+            let outcome = play_one_game(
+                &db,
+                &payload,
+                seed,
+                difficulty,
+                &seat_difficulty,
+                action_cap,
+                dump_paths,
+            );
+            match outcome {
+                RunOutcome::Completed => 0,
+                RunOutcome::Aborted => 2,
+                RunOutcome::Stalled => 3,
+            }
+        }
+        Some(games) => {
+            // Bounded LRU of resolved deck payloads keyed by feed path (Tier 1
+            // per-line feed). pod-lab's gauntlet draws a near-unique random
+            // opponent table per game, so caching every resolved payload for
+            // the process lifetime would grow unboundedly across a batch; the
+            // 97MB card database is unaffected — it's loaded once in `db`
+            // above regardless of how many distinct feeds a batch touches.
+            let mut feed_cache = FeedPayloadCache::new(FEED_CACHE_CAPACITY);
+            // Pre-warm with the already-resolved default feed so a line that
+            // omits the 3rd field, or explicitly repeats the default path,
+            // reuses this payload instead of re-reading and re-resolving it.
+            feed_cache.put(feed.clone(), payload.clone());
+
+            run_batch_isolated(
+                &games,
+                |(seed, _, _)| seed.to_string(),
+                |(seed, seat_diff, feed_path)| {
+                    let seed = *seed;
+                    let seat_diff = *seat_diff;
+                    println!("--- GAME seed={seed} difficulty={seat_diff:?} ---");
+                    // Per-game tier echo (Tier 1 item 3): the exact parsed
+                    // value driving this game, in the same "Seed: X
+                    // Difficulty: Y" format the single-game path prints once
+                    // — never re-derived from the marker text just printed,
+                    // so a marker/tier mismatch can't hide in the marker's
+                    // own `{seat_diff:?}` formatting.
+                    println!("Seed: {seed}   Difficulty: {seat_diff:?}");
+                    // Marker + echo flush (Tier 1 item 4): resolving this
+                    // game's feed (below, a cache miss re-reads and
+                    // re-parses a JSON file) or the game itself can hang;
+                    // flushing here first means the harness already knows
+                    // which seed/difficulty was in flight either way.
+                    let _ = std::io::stdout().flush();
+
+                    // The line's own feed if it specified one, else the
+                    // process-level default. A feed that fails to resolve
+                    // (missing file, bad JSON, fewer than 4 valid precons)
+                    // hard-fails the whole process via the same
+                    // `std::process::exit(1)` `resolve_feed_payload` always
+                    // used for the default feed — deliberately NOT caught
+                    // per-game like a game panic is, so a garbled feed path
+                    // stays exactly as loud in batch mode as it already is in
+                    // single-game mode. The marker + echo above are already
+                    // flushed, so the harness can still attribute the exit to
+                    // this seed.
+                    let effective_feed = feed_path.as_deref().unwrap_or(&feed);
+                    let game_payload = feed_cache.get_or_resolve(effective_feed, || {
+                        resolve_feed_payload(&db, &cards_path, effective_feed)
+                    });
+
+                    play_one_game(
+                        &db,
+                        &game_payload,
+                        seed,
+                        seat_diff,
+                        &seat_difficulty,
+                        action_cap,
+                        dump_paths,
+                    );
+                    // Immediate per-game flush (Tier 1 item 3): if the process
+                    // is killed mid-batch (e.g. pod-lab's external wall-clock
+                    // timeout on a hung game), every already-completed game's
+                    // result must already be on stdout, not buffered.
+                    let _ = std::io::stdout().flush();
+                },
+            );
+            // The whole point of batch mode is that one bad game must not take
+            // the process down; individual game outcomes are already on stdout
+            // (RESULT/ABORT/STALL/PANICKED lines) for the harness to parse per
+            // line, so the process exit code just reports "the batch loop
+            // itself ran to completion", not any one game's outcome.
+            0
+        }
+    }
+}
+
+/// Reads `feed` (relative to `cards_path`), builds up to 4 `PlayerDeckList`s
+/// from its `decks` array, and resolves them into a `DeckPayload` against
+/// `db`. Single authority for this bin's per-feed setup: `run` calls it once
+/// for the process-level default feed (both the single-game path and, in
+/// batch mode, any line that doesn't override the feed), and again per
+/// distinct feed path a `--games-file` line names (see `FeedPayloadCache`).
+/// Prints the same per-deck SKIP/summary lines and the "Resolved deck sizes"
+/// block every call previously printed inline in `run` — moving this to a
+/// function that can run more than once means every additional feed a batch
+/// resolves gets the same operator-visible diagnostics the process-level
+/// feed always got, not silent construction.
+fn resolve_feed_payload(db: &CardDatabase, cards_path: &str, feed: &str) -> DeckPayload {
+    let feed_path = PathBuf::from(cards_path).join(feed);
+    let feed_file = match std::fs::File::open(&feed_path) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("failed to open {}: {e}", feed_path.display());
+            std::process::exit(1);
+        }
+    };
+    let feed_json: serde_json::Value =
+        serde_json::from_reader(feed_file).expect("feed is not valid JSON");
+
+    let decks_json = feed_json["decks"].as_array().expect("feed.decks missing");
 
     let mut deck_lists: Vec<PlayerDeckList> = Vec::new();
     // Commander names are populated in PlayerDeckList.commander and resolved
@@ -310,7 +449,7 @@ fn run(cli: CliArgs) -> i32 {
         ai_decks: vec![deck_lists[2].clone(), deck_lists[3].clone()],
         ..Default::default()
     };
-    let payload: DeckPayload = resolve_deck_list(&db, &deck_list);
+    let payload: DeckPayload = resolve_deck_list(db, &deck_list);
 
     // Post-resolution deck-count line (plan §3.9): `resolve_deck_list` silently
     // skips any name the card database doesn't recognize, so the pre-resolution
@@ -330,63 +469,82 @@ fn run(cli: CliArgs) -> i32 {
     }
     println!();
 
-    // Read once — shared for the whole process (including every game in a
-    // batch). NOTE: in `--games-file` mode, if these are set, each game's dump
-    // overwrites the previous game's file at the same path (last game wins);
-    // pod-lab's harness does not set these env vars for batch runs, and fixing
-    // per-game dump paths is out of scope for the batching change itself.
-    let dump_log_path = read_dump_env("PHASE_DUMP_LOG");
-    let dump_actions_path = read_dump_env("PHASE_DUMP_ACTIONS");
+    payload
+}
 
-    match batch_games {
-        None => {
-            let outcome = play_one_game(
-                &db,
-                &payload,
-                seed,
-                difficulty,
-                &seat_difficulty,
-                action_cap,
-                dump_log_path.as_deref(),
-                dump_actions_path.as_deref(),
-            );
-            match outcome {
-                RunOutcome::Completed => 0,
-                RunOutcome::Aborted => 2,
-                RunOutcome::Stalled => 3,
-            }
-        }
-        Some(games) => {
-            run_batch_isolated(
-                &games,
-                |(seed, _)| seed.to_string(),
-                |&(seed, seat_diff)| {
-                    println!("--- GAME seed={seed} difficulty={seat_diff:?} ---");
-                    play_one_game(
-                        &db,
-                        &payload,
-                        seed,
-                        seat_diff,
-                        &seat_difficulty,
-                        action_cap,
-                        dump_log_path.as_deref(),
-                        dump_actions_path.as_deref(),
-                    );
-                    // Immediate per-game flush (Tier 1 item 3): if the process
-                    // is killed mid-batch (e.g. pod-lab's external wall-clock
-                    // timeout on a hung game), every already-completed game's
-                    // result must already be on stdout, not buffered.
-                    let _ = std::io::stdout().flush();
-                },
-            );
-            // The whole point of batch mode is that one bad game must not take
-            // the process down; individual game outcomes are already on stdout
-            // (RESULT/ABORT/STALL/PANICKED lines) for the harness to parse per
-            // line, so the process exit code just reports "the batch loop
-            // itself ran to completion", not any one game's outcome.
-            0
+/// Bounded least-recently-used cache of resolved deck payloads, keyed by feed
+/// path (`--games-file` batch mode, per-line feed overrides — see the module
+/// doc). `capacity` bounds memory over a long batch of near-unique feeds; a
+/// hit clones the cached `DeckPayload` (cheap relative to re-reading and
+/// re-resolving a feed file) and moves the key to most-recently-used. This is
+/// a small hand-rolled structure over `std` collections rather than a crate
+/// dependency — no `lru`-style crate is already in this workspace's
+/// dependency tree, and the eviction policy needed here (strict recency,
+/// fixed capacity) doesn't warrant adding one.
+struct FeedPayloadCache {
+    capacity: usize,
+    /// Recency order, least-recently-used at the front, most-recently-used
+    /// at the back.
+    order: VecDeque<String>,
+    entries: HashMap<String, DeckPayload>,
+}
+
+impl FeedPayloadCache {
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity,
+            order: VecDeque::with_capacity(capacity),
+            entries: HashMap::with_capacity(capacity),
         }
     }
+
+    /// Returns the cached payload for `key`, resolving it via `resolve` (run
+    /// only on a miss) and inserting the result otherwise.
+    fn get_or_resolve(&mut self, key: &str, resolve: impl FnOnce() -> DeckPayload) -> DeckPayload {
+        if let Some(payload) = self.entries.get(key) {
+            let payload = payload.clone();
+            self.touch(key);
+            return payload;
+        }
+        let payload = resolve();
+        self.put(key.to_string(), payload.clone());
+        payload
+    }
+
+    /// Inserts (or refreshes) `key`, evicting the least-recently-used entry
+    /// first if the cache is already at `capacity`. Also used to pre-warm the
+    /// cache with a payload resolved before the cache existed (the
+    /// process-level default feed, resolved once in `run` regardless of
+    /// batch mode).
+    fn put(&mut self, key: String, payload: DeckPayload) {
+        if !self.entries.contains_key(&key) && self.entries.len() >= self.capacity {
+            if let Some(evicted) = self.order.pop_front() {
+                self.entries.remove(&evicted);
+            }
+        }
+        self.touch(&key);
+        self.entries.insert(key, payload);
+    }
+
+    /// Moves `key` to the most-recently-used position, inserting it if new.
+    fn touch(&mut self, key: &str) {
+        if let Some(pos) = self.order.iter().position(|k| k == key) {
+            self.order.remove(pos);
+        }
+        self.order.push_back(key.to_string());
+    }
+}
+
+/// Optional debug-dump destinations for one game's play-through (see
+/// `read_dump_env`). Bundled into one `Copy` param — rather than two loose
+/// `Option<&str>` args — purely to keep `play_one_game` under clippy's
+/// argument-count lint; `log_path` and `actions_path` are always passed
+/// together as a pair from `run`, resolved once per process and shared by
+/// every game (single or batched).
+#[derive(Clone, Copy)]
+struct DumpPaths<'a> {
+    log_path: Option<&'a str>,
+    actions_path: Option<&'a str>,
 }
 
 /// Drives one complete game: builds a fresh `GameState` from `payload` at
@@ -406,8 +564,7 @@ fn play_one_game(
     difficulty: AiDifficulty,
     seat_difficulty: &[Option<AiDifficulty>; 4],
     action_cap: usize,
-    dump_log_path: Option<&str>,
-    dump_actions_path: Option<&str>,
+    dump_paths: DumpPaths<'_>,
 ) -> RunOutcome {
     let mut state = build_game_state(db, payload, seed);
 
@@ -459,12 +616,12 @@ fn play_one_game(
         &ai_session,
         action_cap,
         &mut |results, state, total_before| {
-            if dump_log_path.is_some() {
+            if dump_paths.log_path.is_some() {
                 for r in &mut *results {
                     game_log.extend(std::mem::take(&mut r.log_entries));
                 }
             }
-            if dump_actions_path.is_some() {
+            if dump_paths.actions_path.is_some() {
                 for r in &*results {
                     actions_log.push(format!("{:?}", r.action));
                 }
@@ -623,11 +780,11 @@ fn play_one_game(
         );
     }
 
-    if let Some(path) = dump_actions_path {
+    if let Some(path) = dump_paths.actions_path {
         std::fs::write(path, actions_log.join("\n")).expect("write actions dump");
         println!("Dumped {} actions to {path}", actions_log.len());
     }
-    if let Some(path) = dump_log_path {
+    if let Some(path) = dump_paths.log_path {
         let json = serde_json::to_string(&game_log).expect("serialize game log");
         std::fs::write(path, json).expect("write game log dump");
         println!("Dumped {} game-log entries to {path}", game_log.len());
@@ -790,15 +947,35 @@ fn parse_seat_override<'a>(
     Ok((idx, label))
 }
 
-/// Parses one non-blank `--games-file` line: `<seed>,<difficulty>`. Pure and
-/// unit-tested; the caller decides how to report a failure. Difficulty labels
-/// are validated against the same `ACCEPTED_DIFFICULTY_LABELS` table
+/// One `--games-file` line's parsed content: the seed, the resolved
+/// difficulty tier, and an optional per-line feed path override (`None` means
+/// "use the process-level `--feed`" — see `parse_games_file_line`).
+type GameSpec = (u64, AiDifficulty, Option<String>);
+
+/// Parses one non-blank `--games-file` line: `<seed>,<difficulty>[,<feed_path>]`.
+/// The third field is optional; when absent (a plain `seed,difficulty` line),
+/// the game falls back to the process-level `--feed`. Pure and unit-tested;
+/// the caller decides how to report a failure. Difficulty labels are
+/// validated against the same `ACCEPTED_DIFFICULTY_LABELS` table
 /// `--difficulty` uses (via `AiDifficulty::from_label`), so a games-file typo
 /// hard-fails exactly like a CLI typo — never silently downgrades to Medium.
-fn parse_games_file_line(line: &str) -> Result<(u64, AiDifficulty), String> {
-    let (seed_str, label_str) = line.split_once(',').ok_or_else(|| {
-        format!("malformed games-file line (expected `seed,difficulty`): {line:?}")
-    })?;
+///
+/// Fields are split on every comma (not just the first), so a feed path
+/// containing a comma is unsupported and produces a malformed-line error
+/// (4+ fields) rather than silently truncating the path — pod-lab's feed
+/// paths are plain relative filenames, so this is not expected to bite in
+/// practice.
+fn parse_games_file_line(line: &str) -> Result<GameSpec, String> {
+    let fields: Vec<&str> = line.split(',').collect();
+    let (seed_str, label_str, feed_str) = match fields.as_slice() {
+        [seed, label] => (*seed, *label, None),
+        [seed, label, feed] => (*seed, *label, Some(*feed)),
+        _ => {
+            return Err(format!(
+                "malformed games-file line (expected `seed,difficulty[,feed_path]`): {line:?}"
+            ))
+        }
+    };
     let seed = seed_str.trim().parse::<u64>().map_err(|_| {
         format!("games-file line {line:?}: seed {seed_str:?} is not a valid non-negative integer")
     })?;
@@ -812,14 +989,22 @@ fn parse_games_file_line(line: &str) -> Result<(u64, AiDifficulty), String> {
             ACCEPTED_DIFFICULTY_LABELS.join(", ")
         ));
     }
-    Ok((seed, AiDifficulty::from_label(label)))
+    // A present-but-blank third field (e.g. a trailing "1009,Easy,") is
+    // treated the same as an absent one — fall back to --feed — rather than
+    // as an error, so a batch generator that always emits a trailing comma
+    // doesn't need to special-case "no override" lines.
+    let feed_path = feed_str
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    Ok((seed, AiDifficulty::from_label(label), feed_path))
 }
 
-/// Reads and parses a whole `--games-file`: one `seed,difficulty` pair per
-/// non-blank line. Any malformed line fails the whole file (see
+/// Reads and parses a whole `--games-file`: one `seed,difficulty[,feed_path]`
+/// entry per non-blank line. Any malformed line fails the whole file (see
 /// `parse_games_file_line`'s doc) rather than skipping it, so a typo can't
 /// silently shrink or corrupt a batch.
-fn parse_games_file(path: &str) -> Result<Vec<(u64, AiDifficulty)>, String> {
+fn parse_games_file(path: &str) -> Result<Vec<GameSpec>, String> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| format!("failed to read games-file {path:?}: {e}"))?;
     content
@@ -878,6 +1063,7 @@ fn build_game_state(db: &CardDatabase, payload: &DeckPayload, seed: u64) -> Game
 mod tests {
     use super::*;
     use engine::ai_support::candidate_actions;
+    use engine::game::deck_loading::PlayerDeckPayload;
     use engine::types::ability::ChoiceType;
     use std::sync::{Arc, Mutex};
 
@@ -1062,15 +1248,48 @@ mod tests {
     }
 
     #[test]
-    fn games_file_line_parses_seed_and_difficulty() {
+    fn games_file_line_parses_seed_and_difficulty_two_field_fallback() {
+        // The 2-field form has no feed override — `None` means "fall back to
+        // the process-level --feed" (see `parse_games_file_line`'s doc).
         assert_eq!(
             parse_games_file_line("1009,Easy"),
-            Ok((1009, AiDifficulty::Easy))
+            Ok((1009, AiDifficulty::Easy, None))
         );
         // Whitespace around either field is tolerated.
         assert_eq!(
             parse_games_file_line(" 42 , VeryHard "),
-            Ok((42, AiDifficulty::VeryHard))
+            Ok((42, AiDifficulty::VeryHard, None))
+        );
+    }
+
+    #[test]
+    fn games_file_line_parses_three_field_feed_override() {
+        assert_eq!(
+            parse_games_file_line("1009,Easy,feeds/other-precons.json"),
+            Ok((
+                1009,
+                AiDifficulty::Easy,
+                Some("feeds/other-precons.json".to_string())
+            ))
+        );
+        // Whitespace around the feed field is tolerated too.
+        assert_eq!(
+            parse_games_file_line(" 42 , VeryHard , feeds/other-precons.json "),
+            Ok((
+                42,
+                AiDifficulty::VeryHard,
+                Some("feeds/other-precons.json".to_string())
+            ))
+        );
+    }
+
+    #[test]
+    fn games_file_line_blank_third_field_falls_back_like_absent() {
+        // A trailing comma with nothing after it is treated the same as an
+        // absent 3rd field, not an error and not an empty-string feed path.
+        assert_eq!(
+            parse_games_file_line("1009,Easy,"),
+            Ok((1009, AiDifficulty::Easy, None))
         );
     }
 
@@ -1090,17 +1309,32 @@ mod tests {
     }
 
     #[test]
+    fn games_file_line_rejects_a_comma_inside_the_feed_path() {
+        // Commas in paths are unsupported (see `parse_games_file_line`'s
+        // doc): a 4th field is malformed, not a path containing a comma.
+        assert!(parse_games_file_line("1009,Easy,feeds/a,b.json").is_err());
+    }
+
+    #[test]
     fn parse_games_file_reads_multiple_lines_and_skips_blanks() {
         let path = temp_games_file_path("games_file_test");
         let _guard = TempFileGuard(path.clone());
-        std::fs::write(&path, "1009,Easy\n\n1010,VeryHard\n  \n1011,Medium\n").unwrap();
+        std::fs::write(
+            &path,
+            "1009,Easy\n\n1010,VeryHard,feeds/other-precons.json\n  \n1011,Medium\n",
+        )
+        .unwrap();
         let games = parse_games_file(path.to_str().unwrap()).unwrap();
         assert_eq!(
             games,
             vec![
-                (1009, AiDifficulty::Easy),
-                (1010, AiDifficulty::VeryHard),
-                (1011, AiDifficulty::Medium),
+                (1009, AiDifficulty::Easy, None),
+                (
+                    1010,
+                    AiDifficulty::VeryHard,
+                    Some("feeds/other-precons.json".to_string())
+                ),
+                (1011, AiDifficulty::Medium, None),
             ]
         );
     }
@@ -1162,5 +1396,95 @@ mod tests {
         );
 
         assert_eq!(*seen.lock().unwrap(), vec![10, 20]);
+    }
+
+    /// Builds a `DeckPayload` whose content is distinguishable by `tag`
+    /// alone, so cache tests can assert on payload identity without a real
+    /// `CardDatabase`/feed file. `sticker_sheets` (a bare `Vec<String>` field
+    /// on `PlayerDeckPayload`, unlike every deck-slot field which holds
+    /// resolved `DeckEntry`s that need a `CardDatabase` to build) is a
+    /// convenient tag carrier for this alone — it has no bearing on what's
+    /// actually being tested (cache identity, not sticker sheets).
+    fn tagged_payload(tag: &str) -> DeckPayload {
+        DeckPayload {
+            player: PlayerDeckPayload {
+                sticker_sheets: vec![tag.to_string()],
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn feed_cache_hits_without_re_resolving() {
+        let mut cache = FeedPayloadCache::new(32);
+        let resolves: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));
+
+        let resolve = |count: &Arc<Mutex<u32>>| {
+            let count = Arc::clone(count);
+            move || {
+                *count.lock().unwrap() += 1;
+                tagged_payload("a")
+            }
+        };
+
+        let first = cache.get_or_resolve("feeds/a.json", resolve(&resolves));
+        let second = cache.get_or_resolve("feeds/a.json", resolve(&resolves));
+
+        assert_eq!(first.player.sticker_sheets, second.player.sticker_sheets);
+        assert_eq!(
+            *resolves.lock().unwrap(),
+            1,
+            "second get_or_resolve for the same key must hit the cache, not re-resolve"
+        );
+    }
+
+    #[test]
+    fn feed_cache_resolves_distinct_payloads_per_key() {
+        let mut cache = FeedPayloadCache::new(32);
+
+        let a = cache.get_or_resolve("feeds/a.json", || tagged_payload("a"));
+        let b = cache.get_or_resolve("feeds/b.json", || tagged_payload("b"));
+
+        assert_eq!(a.player.sticker_sheets, vec!["a".to_string()]);
+        assert_eq!(b.player.sticker_sheets, vec!["b".to_string()]);
+    }
+
+    #[test]
+    fn feed_cache_evicts_least_recently_used_at_capacity() {
+        let mut cache = FeedPayloadCache::new(2);
+        let a_resolves: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));
+
+        // Fill the cache: "a" then "b".
+        cache.get_or_resolve("feeds/a.json", || {
+            *a_resolves.lock().unwrap() += 1;
+            tagged_payload("a")
+        });
+        cache.get_or_resolve("feeds/b.json", || tagged_payload("b"));
+        // A third distinct key evicts the least-recently-used entry ("a",
+        // never touched again since its initial insert) to make room.
+        cache.get_or_resolve("feeds/c.json", || tagged_payload("c"));
+
+        // "a" was evicted, so fetching it again must re-resolve.
+        cache.get_or_resolve("feeds/a.json", || {
+            *a_resolves.lock().unwrap() += 1;
+            tagged_payload("a")
+        });
+        assert_eq!(
+            *a_resolves.lock().unwrap(),
+            2,
+            "evicted key must re-resolve on the next lookup"
+        );
+    }
+
+    #[test]
+    fn feed_cache_put_pre_warms_without_resolving() {
+        let mut cache = FeedPayloadCache::new(32);
+        cache.put("feeds/default.json".to_string(), tagged_payload("default"));
+
+        let payload = cache.get_or_resolve("feeds/default.json", || {
+            panic!("pre-warmed entry must not be re-resolved")
+        });
+        assert_eq!(payload.player.sticker_sheets, vec!["default".to_string()]);
     }
 }
