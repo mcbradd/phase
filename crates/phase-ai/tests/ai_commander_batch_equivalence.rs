@@ -299,13 +299,30 @@ fn batch_per_line_feed_matches_single_game_across_two_feeds() {
         "batch must print exactly one block per games-file line"
     );
 
+    // Asserts the test's own premise before trusting the equivalence checks
+    // below: feed A and feed B must actually produce DIFFERENT games (a
+    // different 4-deck table plus a different seed), so a batch run that
+    // silently routed every line to the wrong feed — or ignored the 3rd
+    // field entirely — would show up as a mismatch here, not slip through
+    // as coincidental equality. Without this, the two `assert_eq!`s below
+    // could pass even if per-line feed routing were completely broken.
+    let single_a_result = normalized_result_block(single_a_blocks[0]);
+    let single_b_result = normalized_result_block(single_b_blocks[0]);
+    assert_ne!(
+        single_a_result, single_b_result,
+        "feed A and feed B must produce distinguishable single-game RESULT \
+         blocks, or the equivalence checks below can't discriminate correct \
+         per-line feed routing from a broken batch that used the same feed \
+         for every line — adjust the seeds/feed to force a difference"
+    );
+
     assert_eq!(
-        normalized_result_block(single_a_blocks[0]),
+        single_a_result,
         normalized_result_block(batch_blocks[0]),
         "batch game 1 (feed A via 3rd-field override) must match single-game A"
     );
     assert_eq!(
-        normalized_result_block(single_b_blocks[0]),
+        single_b_result,
         normalized_result_block(batch_blocks[1]),
         "batch game 2 (feed B via 3rd-field override) must match single-game B"
     );
