@@ -214,6 +214,87 @@ fn batch_per_line_feed_matches_single_game_across_two_feeds() {
     );
 }
 
+/// Higher action cap for the cross-game-leakage regression below: the
+/// wall-clock-deadline divergence this guards only surfaces deep into a game
+/// (the original repro diverged around turn ~50 / action ~1700), so the tiny
+/// `TEST_ACTION_CAP` used by the plumbing tests above would never reach the
+/// decisions where an interactive search's budget could straddle. Still bounded
+/// so an `#[ignore]` opt-in run stays minutes, not tens of minutes.
+const LEAK_REGRESSION_ACTION_CAP: &str = "2000";
+
+/// Regression for the cross-game state-leakage defect (pod-lab equivalence
+/// gate; PR phase-rs/phase#6252): seed 95000004 won cleanly for P1 run solo but
+/// STALLED at turn 60 when played as the 3rd game in a `--games-file` batch
+/// (after 2 unrelated games in the same process). Root cause: the AI's
+/// interactive search was bounded by a wall-clock deadline
+/// (`AI_SEARCH_TIME_BUDGET_MS`), and a warmer/slower Nth-in-batch process
+/// expired it on a mid-game decision the fresh solo process completed in full —
+/// diverging the game. The fix runs every seat in measurement mode
+/// (`build_seat_config`), disabling the wall-clock deadline so search is a pure
+/// function of `(seed, difficulty, feed)`.
+///
+/// This encodes the repro shape end-to-end: the SAME game, run alone vs. run
+/// 3rd after 2 unrelated games, must produce a byte-identical RESULT block.
+/// (The deterministic, box-speed-independent catcher for this bug is
+/// `ai_commander.rs`'s `seat_config_runs_in_measurement_mode_for_batch_reproducibility`
+/// unit test; this is the integration-level forward guard for the whole path.)
+#[test]
+#[ignore = "loads card-data.json + runs real games; opt in via --ignored"]
+fn batched_third_game_matches_same_game_run_alone() {
+    let target_seed = "95000004";
+    let prefix_a = "95000000";
+    let prefix_b = "95000001";
+
+    // The target game run entirely alone (single-game mode).
+    let solo = run_ai_commander(&[
+        "--seed",
+        target_seed,
+        "--difficulty",
+        "Hard",
+        "--action-cap",
+        LEAK_REGRESSION_ACTION_CAP,
+    ]);
+
+    // The SAME target game, but 3rd in a batch process that first played two
+    // unrelated games — the exact configuration that leaked before the fix.
+    let pid = std::process::id();
+    let games_file_path = std::env::temp_dir().join(format!("ai_commander_leak_repro_{pid}.txt"));
+    std::fs::write(
+        &games_file_path,
+        format!("{prefix_a},Hard\n{prefix_b},Hard\n{target_seed},Hard\n"),
+    )
+    .expect("write games-file");
+    let batch = run_ai_commander(&[
+        "--games-file",
+        games_file_path.to_str().unwrap(),
+        "--action-cap",
+        LEAK_REGRESSION_ACTION_CAP,
+    ]);
+    let _ = std::fs::remove_file(&games_file_path);
+
+    let solo_blocks = game_blocks(&solo);
+    let batch_blocks = game_blocks(&batch);
+    assert_eq!(
+        solo_blocks.len(),
+        1,
+        "single-game must print exactly one game"
+    );
+    assert_eq!(
+        batch_blocks.len(),
+        3,
+        "batch must print exactly one block per games-file line"
+    );
+
+    // Block index 2 is the 3rd (target) game in the batch.
+    assert_eq!(
+        normalized_result_block(solo_blocks[0]),
+        normalized_result_block(batch_blocks[2]),
+        "the target game played 3rd in a batch must be bit-identical to the \
+         same game run alone; a divergence here is the cross-game leak \
+         (wall-clock-deadline non-determinism) regressing"
+    );
+}
+
 #[test]
 #[ignore = "loads card-data.json + runs real games; opt in via --ignored"]
 fn batch_output_echoes_seed_and_parsed_difficulty_per_game() {
