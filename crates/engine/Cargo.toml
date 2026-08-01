@@ -22,6 +22,11 @@ test-support = []
 # consumers do not enable this feature and continue to use the existing action
 # transport until the explicit adapter cutover.
 interaction-bindings = ["dep:ts-rs"]
+# Differential verification of the entry-incremental layer flush (CR 613.1):
+# every incremental pass is checked against a full re-evaluation of the same
+# post-entry board. Far slower than the pass it checks — a diagnostic build
+# only, never a production or measurement consumer.
+differential-flush = []
 # Compiles the shared combo corpus (`analysis::corpus`) into the lib + the
 # `combo-verify` tool bin, including the scenario harness it drives. Excluded
 # from the default lib / WASM surface.

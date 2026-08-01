@@ -47,6 +47,12 @@ use crate::types::layers::{ActiveContinuousEffect, Layer};
 use crate::types::phase::Phase;
 use crate::types::player::PlayerId;
 use crate::types::statics::StaticMode;
+
+/// S0.4 differential verification of the entry-incremental flush. Compiled only
+/// under `cfg(test)` or the `differential-flush` feature; see the module docs
+/// for why it is additionally gated at runtime.
+#[cfg(any(test, feature = "differential-flush"))]
+pub(crate) mod differential;
 use crate::types::zones::Zone;
 
 #[derive(Debug, Clone)]
@@ -1938,6 +1944,46 @@ fn battlefield_zone_materialization_count() -> usize {
     BATTLEFIELD_ZONE_MATERIALIZATION_COUNT.with(core::cell::Cell::get)
 }
 
+/// Run `f` without letting it move any of the `cfg(test)` observation counters
+/// above.
+///
+/// Single authority for "this evaluation is not the production pass": the
+/// differential harness's shadow full evaluation is an extra `evaluate_layers`
+/// over a throwaway clone, and every counter those tests assert on
+/// (`FULL_EVALUATE_LAYERS_COUNT`, the gather count, the battlefield
+/// materialization count) is incremented inside `evaluate_layers`. Left
+/// unsuppressed, switching the harness on changes the very quantity the counter
+/// tests exist to pin. A new observation counter must be restored here too.
+///
+/// Deltas are subtracted rather than the pre-value stored, so a concurrent
+/// thread's increment to the process-global atomic survives.
+#[cfg(any(test, feature = "differential-flush"))]
+pub(crate) fn without_counter_observation<T>(f: impl FnOnce() -> T) -> T {
+    #[cfg(not(test))]
+    return f();
+
+    #[cfg(test)]
+    {
+        use std::sync::atomic::Ordering;
+
+        let full_before = FULL_EVALUATE_LAYERS_COUNT.load(Ordering::Relaxed);
+        let gather_before = active_effect_collection_count();
+        let materialize_before = battlefield_zone_materialization_count();
+
+        let out = f();
+
+        FULL_EVALUATE_LAYERS_COUNT.fetch_sub(
+            FULL_EVALUATE_LAYERS_COUNT
+                .load(Ordering::Relaxed)
+                .saturating_sub(full_before),
+            Ordering::Relaxed,
+        );
+        ACTIVE_EFFECT_COLLECTION_COUNT.with(|count| count.set(gather_before));
+        BATTLEFIELD_ZONE_MATERIALIZATION_COUNT.with(|count| count.set(materialize_before));
+        out
+    }
+}
+
 // Test-only placement toggle for the `StaticSourceIndex` rebuild, used to prove
 // the discriminating regression test goes RED on the (buggy) end-of-pass
 // placement and GREEN on the (correct) top-of-pass placement. Production code
@@ -3586,6 +3632,11 @@ pub fn flush_layers(state: &mut GameState) {
             if ids.is_empty() {
                 return;
             }
+            // S0.4 differential verification: the scratch clone MUST be taken
+            // before `prepare_incremental_flush`, whose first act is to reset
+            // the recipients to base. `None` (and no clone) when disabled.
+            #[cfg(any(test, feature = "differential-flush"))]
+            let scratch = differential::scratch_before_flush(state);
             if let Some(prepared) = prepare_incremental_flush(state, &ids) {
                 super::perf_counters::record_layers_incremental();
                 apply_layers_incremental(state, prepared);
@@ -3599,6 +3650,8 @@ pub fn flush_layers(state: &mut GameState) {
                     super::public_state::mark_public_state_object_dirty(state, *id);
                 }
                 super::public_state::mark_battlefield_display_dirty(state);
+                #[cfg(any(test, feature = "differential-flush"))]
+                differential::verify(state, scratch);
             } else {
                 super::perf_counters::record_layers_escalated();
                 super::perf_counters::record_layers_full_eval();
@@ -3613,6 +3666,14 @@ pub fn flush_layers(state: &mut GameState) {
 /// arms go through here — the full pass applies it board-wide over the
 /// phased-in battlefield, the incremental arm applies it to recipients only —
 /// so the two arms cannot drift in what "base" means.
+///
+/// Every field written here is a field the differential harness must compare;
+/// `differential::RecipientDerived` mirrors this set. The mirror is enforced
+/// per-field by `differential::tests::every_reset_field_is_observed_by_the_comparator`
+/// (a field this function writes but the snapshot does not read is a field the
+/// harness would silently never check). That tie is a test, not a compile-time
+/// guarantee — the compile-time half runs on the comparator side, where
+/// `compare_snapshots` destructures `RecipientDerived` exhaustively.
 fn reset_recipient_to_base(obj: &mut crate::game::game_object::GameObject) {
     obj.sync_missing_base_characteristics();
     seed_live_characteristics_from_base(obj);

@@ -932,6 +932,33 @@ fn p0_saproling_ids(state: &GameState) -> BTreeSet<ObjectId> {
         .collect()
 }
 
+/// Give the creature a PRE-EXISTING +1/+1 counter and leave the board in a
+/// state the engine could actually have produced.
+///
+/// The counter map write alone is not enough: `layers_dirty` stays clean, so
+/// the object's derived power/toughness never picks the counter up (layer 7c,
+/// CR 613.4c) and the fixture drives a board where a 1/1 carries a +1/+1
+/// counter. The `differential-flush` harness reports exactly that as an
+/// incremental-vs-full divergence. Re-deriving here is what the production
+/// counter writer would have left behind — `add_counter_with_replacement` marks
+/// layers for every counter kind `counter_type_affects_layers` accepts.
+///
+/// It is deliberately NOT routed through `add_counter_with_replacement`: this
+/// is board setup, not an event happening now, and that path also records a
+/// turn-scoped `counter_added_this_turn` entry. A counter that was already on
+/// the permanent when the dump was captured has no such record, and injecting
+/// one changes which observers these tests measure as having drifted.
+fn graft_base_plus_counter(state: &mut GameState, creature: ObjectId, count: u32) {
+    state
+        .objects
+        .get_mut(&creature)
+        .expect("the grafted creature must exist")
+        .counters
+        .insert(engine::types::CounterType::Plus1Plus1, count);
+    mark_layers_full(state);
+    flush_layers(state);
+}
+
 /// Drive the REAL production path — `apply(.., PassPriority)` for the actual priority
 /// holder each beat — until the current phase/step ends and the `enter_phase → drain`
 /// boundary runs. Returns as soon as the boundary surfaces a non-Priority prompt (e.g.
@@ -2033,12 +2060,7 @@ fn real_4p_boundary_collapse_batches_unobserved_counter_and_declines_observed_li
         .next()
         .expect("P0 controls at least one Saproling to bear a +1/+1 counter");
     let base_counters = 1u32;
-    state
-        .objects
-        .get_mut(&creature)
-        .unwrap()
-        .counters
-        .insert(CounterType::Plus1Plus1, base_counters);
+    graft_base_plus_counter(&mut state, creature, base_counters);
     let p0_life_before = state.players.iter().find(|p| p.id == P0).unwrap().life;
 
     state.mark_unbounded_loop(
@@ -2172,12 +2194,7 @@ fn real_4p_counter_observer_drift_in_window_declines_batched_counter_but_still_m
         .next()
         .expect("P0 controls at least one Saproling to bear a +1/+1 counter");
     let base_counters = 1u32;
-    state
-        .objects
-        .get_mut(&creature)
-        .unwrap()
-        .counters
-        .insert(CounterType::Plus1Plus1, base_counters);
+    graft_base_plus_counter(&mut state, creature, base_counters);
     state.mark_unbounded_loop(
         P0,
         &[ResourceAxis::Counter(
@@ -2797,12 +2814,7 @@ fn med_mixed_counter_tokens_pause_commits_finite_counter_and_keeps_only_tokens_u
         .next()
         .expect("P0 controls at least one Saproling to bear a +1/+1 counter");
     let base_counters = 1u32;
-    state
-        .objects
-        .get_mut(&creature)
-        .unwrap()
-        .counters
-        .insert(CounterType::Plus1Plus1, base_counters);
+    graft_base_plus_counter(&mut state, creature, base_counters);
     state.mark_unbounded_loop(
         P0,
         &[ResourceAxis::Counter(
