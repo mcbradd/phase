@@ -9870,6 +9870,22 @@ mod tests {
             setup_board: impl Fn() -> GameState,
             add_entry: impl Fn(&mut GameState) -> ObjectId,
         ) -> (GameState, bool, GameState) {
+            // Blocking differential coverage in the DEFAULT test path: the
+            // harness compiles under `cfg(test)` but is runtime-dead unless
+            // switched on, so without this guard none of the fixtures below
+            // actually compare the incremental board against a full pass. With
+            // it, every fixture that takes the incremental arm is checked over
+            // all of `DivergenceClass`, not just the power/toughness/keywords
+            // that `assert_pt_identical` covers. Thread-local and restored on
+            // drop, so parallel tests are unaffected.
+            //
+            // There is no opt-out: every fixture in this module runs enforced.
+            // An escape hatch existed while the color channel was a pinned known
+            // gap — a fixture that deliberately drove a divergent board needed
+            // the comparator quiet so its own assertions could run. That gap is
+            // closed, so the hatch is gone rather than left available.
+            let _differential = crate::game::layers::differential::DifferentialSwitch::on();
+
             // Normal path: flush the anthem in, add the entry, read the decision,
             // then flush incrementally (or full, per the decision).
             let mut normal = setup_board();
@@ -10164,6 +10180,37 @@ mod tests {
         /// (3a) Count-anthem (ObjectCount artifacts) — NON-perturbing: a colorless
         /// creature entry doesn't match "artifacts you control", so the magnitude
         /// on pre-existing creatures cannot change; must NOT escalate AND match
+        /// Tripwire for THIS module's differential coverage being live.
+        ///
+        /// Every fixture here routes through `flush_entry_and_forced`, which
+        /// holds `DifferentialSwitch::on()`. Delete that one line and the
+        /// harness goes runtime-dead: `scratch_before_flush` returns `None`,
+        /// `verify` early-returns, and all of the fixtures below still pass
+        /// while comparing nothing. That is exactly the dead-gate failure mode
+        /// the harness exists to rule out, so it must not be possible here
+        /// either. Reset the per-class comparison counters, drive one fixture
+        /// that is pinned to take the incremental arm, and require the
+        /// comparator to have actually looked. The counters are thread-local,
+        /// so this is safe under the parallel runner.
+        #[test]
+        fn entry_flush_fixtures_actually_run_the_comparator() {
+            crate::game::layers::differential::reset_comparison_counts();
+            let (_, escalated, _) = flush_entry_and_forced(artifact_count_anthem_board, |s| {
+                add_colorless_creature_entry(s, 252)
+            });
+            assert!(
+                !escalated,
+                "this tripwire needs a fixture on the incremental arm — the \
+                 comparator only runs on the entry-incremental path"
+            );
+            let counts = crate::game::layers::differential::comparison_counts();
+            assert!(
+                counts.iter().any(|&c| c > 0),
+                "the entry-flush fixtures compared nothing — differential \
+                 coverage in this module is dead"
+            );
+        }
+
         /// full.
         #[test]
         fn count_anthem_nonmatching_entry_does_not_escalate_and_matches_full() {
@@ -10318,6 +10365,20 @@ mod tests {
                 "escalated entry must derive the same board as a full re-evaluation"
             );
             assert_pt_identical(&normal, &forced, "color-keyed population escalation");
+            // The shared comparator must agree with the hand-written assertions
+            // above: zero divergence between the escalated board and the full
+            // re-evaluation. This is what proves the comparator is not silently
+            // blind to the class of bug it exists to catch — it reported exactly
+            // this fixture's divergence back when the color channel was open.
+            let divergences = crate::game::layers::differential::compare_boards(&normal, &forced);
+            assert!(
+                divergences.is_empty(),
+                "comparator must report no divergence once the color channel escalates, got {:?}",
+                divergences
+                    .iter()
+                    .map(|d| d.class.label())
+                    .collect::<Vec<_>>()
+            );
         }
 
         /// Build a board pairing a PURE layer-4 type-writer with a
