@@ -1,5 +1,5 @@
 use crate::types::events::GameEvent;
-use crate::types::game_state::GameState;
+use crate::types::game_state::{FullEvalClass, GameState};
 use crate::types::identifiers::{ObjectId, ObjectIncarnationRef};
 use crate::types::resolved_commands::{
     ResolvedObjectTransformCommand, ResolvedObjectTransformReplayInvariantError,
@@ -141,7 +141,7 @@ pub fn transform_permanent(
     let resulting_transformed = obj.transformed;
     let resulting_transformation_count = obj.transformation_count;
 
-    crate::game::layers::mark_layers_full(state);
+    crate::game::layers::mark_layers_full_classed(state, FullEvalClass::FormChange);
 
     // CR 733: journal the settled transform through its owning family. Every
     // no-op guard above returned before the swap, so only a transform that
@@ -212,7 +212,7 @@ pub fn apply_resolved_transform(
     // must carry the allocator past it or a later draw reissues it.
     state.adopt_replayed_timestamp(command.resulting_timestamp);
 
-    crate::game::layers::mark_layers_full(state);
+    crate::game::layers::mark_layers_full_classed(state, FullEvalClass::FormChange);
 
     Ok(())
 }

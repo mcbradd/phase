@@ -15,7 +15,7 @@ use crate::types::events::{GameEvent, ManaTapState};
 use crate::types::game_state::{
     ActivationResidual, ActivationTargetSelection, AssistState, CastPaymentMode,
     CastingPermissionIndex, CastingVariant, ConvokeMode, CostResume, CounterCostChoice,
-    CounterRemoveChoice, DeferredSacrificeSelection, DistributionUnit, GameState,
+    CounterRemoveChoice, DeferredSacrificeSelection, DistributionUnit, FullEvalClass, GameState,
     ManaAbilityCostParent, ManaAbilityResume, PayCostKind, PendingCast, PendingCostMoveCompletion,
     PendingCostMoveResume, PendingDiscardForCostResume, PendingSacrificeCostCompletion,
     SpellCostSource, StackEntry, StackEntryKind, StackPaidSnapshot, WaitingFor,
@@ -12346,6 +12346,7 @@ pub(super) fn apply_committed_assist(
             })?;
         if mana_payment::has_unspent_mana_continuous_effects(state) {
             state.layers_dirty.mark_full();
+            state.layers_full_classes.insert(FullEvalClass::Other);
         }
     }
     // CR 702.132a + CR 118.10: A committed Assist contribution pays this

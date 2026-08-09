@@ -2,7 +2,7 @@ use crate::game::quantity::resolve_quantity_with_targets;
 use crate::game::zone_pipeline::{self, BatchMoveResult, ZoneMoveRequest};
 use crate::types::ability::{Effect, EffectError, EffectKind, ResolvedAbility, TargetFilter};
 use crate::types::events::GameEvent;
-use crate::types::game_state::{BatchCompletion, CloakExileMember, GameState};
+use crate::types::game_state::{BatchCompletion, CloakExileMember, FullEvalClass, GameState};
 use crate::types::zones::Zone;
 
 /// CR 701.58a: Cloak — put the top card of a player's library onto the
@@ -257,14 +257,14 @@ pub(crate) fn complete_tracked_set_exile_delivery(
                     enters_under,
                 },
             );
-            crate::game::layers::mark_layers_full(state);
+            crate::game::layers::mark_layers_full_classed(state, FullEvalClass::FormChange);
             return BatchMoveResult::NeedsChoice;
         }
     }
 
     // The detach/exile/return churn changed the attachment graph and P/T; force
     // a layer recompute so downstream reads settle (mirrors exit severing).
-    crate::game::layers::mark_layers_full(state);
+    crate::game::layers::mark_layers_full_classed(state, FullEvalClass::FormChange);
     events.push(GameEvent::EffectResolved {
         kind: EffectKind::Cloak,
         source_id,

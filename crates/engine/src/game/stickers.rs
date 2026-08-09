@@ -11,7 +11,7 @@ use crate::types::ability::{ContinuousModification, TargetFilter};
 use crate::types::card::CardFace;
 use crate::types::card_type::CardType;
 use crate::types::events::GameEvent;
-use crate::types::game_state::GameState;
+use crate::types::game_state::{FullEvalClass, GameState};
 use crate::types::identifiers::{CardId, ObjectId};
 use crate::types::keywords::Keyword;
 use crate::types::layers::{ActiveContinuousEffect, Layer};
@@ -417,6 +417,7 @@ pub fn apply_selected_sticker(
 
     if obj.zone == Zone::Battlefield {
         state.layers_dirty.mark_full();
+        state.layers_full_classes.insert(FullEvalClass::FormChange);
     } else if zone_retains_stickers(obj.zone) {
         rebuild_public_zone_stickers(obj);
     }

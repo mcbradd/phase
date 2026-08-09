@@ -1,7 +1,7 @@
 use crate::game::printed_cards::apply_back_face_to_object;
 use crate::types::ability::{Effect, EffectError, EffectKind, ResolvedAbility};
 use crate::types::events::GameEvent;
-use crate::types::game_state::GameState;
+use crate::types::game_state::{FullEvalClass, GameState};
 
 /// CR 406.3: Turn the card(s) referenced by `target` face up via a resolving
 /// effect — distinct from the morph/disguise *special action* in
@@ -58,7 +58,7 @@ pub fn resolve(
     // CR 613: a turned-up card's restored characteristics require a layer
     // re-derive (mirrors the morph special-action path).
     if restored_any {
-        crate::game::layers::mark_layers_full(state);
+        crate::game::layers::mark_layers_full_classed(state, FullEvalClass::FormChange);
     }
 
     events.push(GameEvent::EffectResolved {

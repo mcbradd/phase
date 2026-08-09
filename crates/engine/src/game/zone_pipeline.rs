@@ -16,11 +16,11 @@ use crate::types::ability::{
 use crate::types::counter::CounterType;
 use crate::types::events::GameEvent;
 use crate::types::game_state::{
-    BatchCompletion, ExileLinkKind, GameState, LiminalEntryKind, LogicalZoneChangeGroup,
-    MergedCardComponentRoute, PendingBatchDeliveries, PendingBatchZoneChangeCause,
-    PendingBatchZoneMoveRequest, PendingCounterPostAction, PendingLiminalEntryResume,
-    PendingZoneChangeDelivery, PostReplacementDrainOwner, WaitingFor, ZoneDeliveryExileTracking,
-    ZoneMoveCompletion,
+    BatchCompletion, ExileLinkKind, FullEvalClass, GameState, LiminalEntryKind,
+    LogicalZoneChangeGroup, MergedCardComponentRoute, PendingBatchDeliveries,
+    PendingBatchZoneChangeCause, PendingBatchZoneMoveRequest, PendingCounterPostAction,
+    PendingLiminalEntryResume, PendingZoneChangeDelivery, PostReplacementDrainOwner, WaitingFor,
+    ZoneDeliveryExileTracking, ZoneMoveCompletion,
 };
 use std::collections::HashSet;
 
@@ -980,7 +980,7 @@ pub(crate) fn move_object_with_terminal(
             // the blast radius of a subtle divergence here is the whole test
             // suite. Unconditional, regardless of what move_to_zone's own
             // (now axis-gated) internal decision would otherwise have been.
-            crate::game::layers::mark_layers_full(state);
+            crate::game::layers::mark_layers_full_classed(state, FullEvalClass::TestSetup);
             return ZoneMoveTerminalResult::Completed(zone_move_completion_from_delivery(
                 member,
                 &events[delivery_start..],
@@ -2494,7 +2494,7 @@ pub(crate) fn deliver_replaced_zone_change(
         if from == Zone::Battlefield
             || (to == Zone::Battlefield && !(entered_battlefield && took_plain_zone_transfer))
         {
-            crate::game::layers::mark_layers_full(state);
+            crate::game::layers::mark_layers_full_classed(state, FullEvalClass::BattlefieldExit);
         }
         // CR 708.3: An object put onto the battlefield face down is turned face
         // down BEFORE it enters, so its ETB abilities don't trigger and its
@@ -4466,7 +4466,7 @@ mod layers_incremental_flush_tests {
         // Round-4 fix (maintainer, PR #6777): prime with a real flush so the
         // live watcher is INDEXED, then prove the before arm fires through the
         // indexed path (buckets non-empty — no empty-index fallback involved).
-        crate::game::layers::mark_layers_full(&mut state);
+        crate::game::layers::mark_layers_full_classed(&mut state, FullEvalClass::TestSetup);
         crate::game::layers::flush_layers(&mut state);
         assert_eq!(
             state.static_source_index.battlefield_sources.len(),
@@ -4562,7 +4562,7 @@ mod layers_incremental_flush_tests {
         // path for hand-built state. The populated-bucket shape, where the
         // after arm provably cannot see the newcomer, is pinned by
         // `populated_index_entry_defers_zone_reading_static_to_flush_escalation`.
-        crate::game::layers::mark_layers_full(&mut state);
+        crate::game::layers::mark_layers_full_classed(&mut state, FullEvalClass::TestSetup);
         crate::game::layers::flush_layers(&mut state);
         assert!(
             matches!(state.layers_dirty, LayersDirty::Clean),
@@ -4678,7 +4678,7 @@ mod layers_incremental_flush_tests {
             );
         }
 
-        crate::game::layers::mark_layers_full(&mut state);
+        crate::game::layers::mark_layers_full_classed(&mut state, FullEvalClass::TestSetup);
         crate::game::layers::flush_layers(&mut state);
         assert_eq!(
             state.static_source_index.battlefield_sources.len(),

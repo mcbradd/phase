@@ -21,7 +21,7 @@ use crate::game::scenario::{GameRunner, GameScenario, P0, P1};
 use crate::game::scenario_db::GameScenarioDbExt;
 use crate::types::ability::TargetRef;
 use crate::types::actions::{GameAction, PrecastCopyShortcutResponse};
-use crate::types::game_state::{GameState, WaitingFor};
+use crate::types::game_state::{FullEvalClass, GameState, WaitingFor};
 use crate::types::identifiers::ObjectId;
 use crate::types::mana::{ManaType, ManaUnit};
 use crate::types::phase::Phase;
@@ -1139,6 +1139,7 @@ fn float_mana(state: &mut GameState, n: usize) {
 /// counter-derived P/T apply before the loop is driven.
 pub(crate) fn settle_layers(state: &mut GameState) {
     state.layers_dirty.mark_full();
+    state.layers_full_classes.insert(FullEvalClass::TestSetup);
     crate::game::layers::evaluate_layers(state);
 }
 
@@ -1494,6 +1495,7 @@ pub(crate) fn drive_offline_heliod_ballista(db: &CardDatabase) -> Option<LoopCer
         }
         // CR 613: recompute layers so the granted keyword / counters take effect.
         state.layers_dirty.mark_full();
+        state.layers_full_classes.insert(FullEvalClass::TestSetup);
         crate::game::layers::evaluate_layers(state);
         ballista
     };

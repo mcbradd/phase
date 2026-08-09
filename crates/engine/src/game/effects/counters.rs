@@ -12,8 +12,8 @@ use crate::types::counter::parse_counter_type;
 use crate::types::counter::CounterType;
 use crate::types::events::GameEvent;
 use crate::types::game_state::{
-    CounterAddedRecord, CounterMoveChoice, CounterRemoveChoice, DelayedTrigger, GameState,
-    PendingCounterAddition, PendingCounterAdditionQueue, PendingCounterMove,
+    CounterAddedRecord, CounterMoveChoice, CounterRemoveChoice, DelayedTrigger, FullEvalClass,
+    GameState, PendingCounterAddition, PendingCounterAdditionQueue, PendingCounterMove,
     PendingCounterMoveQueue, PendingCounterPostAction, PendingCounterRemovalQueue,
     PendingEffectResolutionEvent, PendingEffectResolved, WaitingFor,
 };
@@ -1009,6 +1009,7 @@ pub fn apply_resolved_counter_edit(
 
     if affects_layers {
         state.layers_dirty.mark_full();
+        state.layers_full_classes.insert(FullEvalClass::Counters);
     }
     if let Some(record) = added_record {
         state.counter_added_this_turn.push(record);

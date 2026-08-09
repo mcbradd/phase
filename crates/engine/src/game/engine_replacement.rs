@@ -10,7 +10,8 @@ use crate::types::ability::{EffectScope, TapStateChange};
 use crate::types::counter::CounterType;
 use crate::types::events::{GameEvent, ManaTapState};
 use crate::types::game_state::{
-    GameState, PendingCostMoveResume, PendingCounterPostAction, TokenEntryEventEmission, WaitingFor,
+    FullEvalClass, GameState, PendingCostMoveResume, PendingCounterPostAction,
+    TokenEntryEventEmission, WaitingFor,
 };
 use crate::types::identifiers::ObjectId;
 use crate::types::keywords::Keyword;
@@ -688,6 +689,7 @@ pub(super) fn handle_replacement_choice(
                         }
                         if count > 0 {
                             state.layers_dirty.mark_full();
+                            state.layers_full_classes.insert(FullEvalClass::Other);
                         }
                     }
                 }
@@ -1988,7 +1990,7 @@ fn finish_copy_target_choice_entry(
 ) -> Result<Option<WaitingFor>, EngineError> {
     // Force a full layer pass after the copy chain so the realized
     // characteristics below (enter-tapped, ETB counters) read post-copy state.
-    crate::game::layers::mark_layers_full(state);
+    crate::game::layers::mark_layers_full_classed(state, FullEvalClass::Other);
     crate::game::layers::flush_layers(state);
     let enter_modifiers =
         super::replacement::current_self_enter_replacement_modifiers(state, source_id);
@@ -2027,7 +2029,7 @@ fn finish_copy_target_choice_entry(
     // `false` here means an earlier convergence point already realized it (structurally
     // idempotent, `Option::take_if`), which is not an error.
     let _ = super::effects::token::flush_pending_token_battlefield_entry(state, source_id, events);
-    crate::game::layers::mark_layers_full(state);
+    crate::game::layers::mark_layers_full_classed(state, FullEvalClass::Other);
     // CR 614.12a + CR 707.9: The battlefield-entry `ZoneChanged` event was
     // captured into `state.deferred_entry_events` when `CopyTargetChoice` was
     // set up, *before* `BecomeCopy` had a chance to push the copied object's

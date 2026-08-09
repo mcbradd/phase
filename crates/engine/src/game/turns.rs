@@ -10,8 +10,8 @@ use crate::types::counter::CounterType;
 use crate::types::events::GameEvent;
 use crate::types::format::GameFormat;
 use crate::types::game_state::{
-    AutoPassMode, ExtraPhase, ExtraTurn, GameState, LoopCollapseAxis, PayableResource,
-    PendingCounterAddition, PendingEffectResolved, TurnBoundary, WaitingFor,
+    AutoPassMode, ExtraPhase, ExtraTurn, FullEvalClass, GameState, LoopCollapseAxis,
+    PayableResource, PendingCounterAddition, PendingEffectResolved, TurnBoundary, WaitingFor,
 };
 use crate::types::identifiers::ObjectId;
 use crate::types::phase::Phase;
@@ -1150,6 +1150,7 @@ pub fn start_next_turn(state: &mut GameState, events: &mut Vec<GameEvent>) {
     // unrelated effect happens to dirty it. Mirrors the counter-ledger expiry
     // invalidation below; unconditional because the increment always changes state.
     state.layers_dirty.mark_full();
+    state.layers_full_classes.insert(FullEvalClass::Other);
 
     // CR 311.5 / CR 312.4 / CR 901.6: the planar controller is normally whoever
     // the active player is. The turn has committed here (past both turn-skip
@@ -1292,6 +1293,7 @@ pub fn start_next_turn(state: &mut GameState, events: &mut Vec<GameEvent>) {
     // static that gained a keyword from a counter placed last turn stays cached.
     if !state.counter_added_this_turn.is_empty() {
         state.layers_dirty.mark_full();
+        state.layers_full_classes.insert(FullEvalClass::Counters);
     }
     state.counter_added_this_turn.clear();
     state.players_who_discarded_card_this_turn.clear();

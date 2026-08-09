@@ -26,7 +26,7 @@ use crate::types::counter::CounterType;
 use crate::types::events::GameEvent;
 use crate::types::game_state::{
     ActionResult, CastOfferKind, CastPaymentMode, CastingVariant, CastingVariantChoiceOption,
-    ConvokeMode, GameState, ManaChoice, ManaChoicePrompt, PendingCast, WaitingFor,
+    ConvokeMode, FullEvalClass, GameState, ManaChoice, ManaChoicePrompt, PendingCast, WaitingFor,
 };
 use crate::types::identifiers::{CardId, ObjectId};
 use crate::types::keywords::Keyword;
@@ -1521,6 +1521,9 @@ impl GameRunner {
             }
         }
         self.state.layers_dirty.mark_full();
+        self.state
+            .layers_full_classes
+            .insert(FullEvalClass::TestSetup);
     }
 
     /// Declare blockers (CR 509.1). Must be called when the engine is at

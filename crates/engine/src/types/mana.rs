@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use super::ability::{AbilityTag, Comparator, TargetFilter, TriggerDefinitionOccurrenceRef};
 use super::events::GameEvent;
-use super::game_state::ProductionOverride;
+use super::game_state::{FullEvalClass, ProductionOverride};
 use super::identifiers::{ObjectId, ObjectIncarnationRef};
 use super::keywords::{Keyword, KeywordKind};
 use super::player::PlayerId;
@@ -2309,6 +2309,7 @@ pub fn apply_empty_mana_pool_decisions(
     }
     if changed {
         state.layers_dirty.mark_full();
+        state.layers_full_classes.insert(FullEvalClass::Other);
     }
     removed_count
 }

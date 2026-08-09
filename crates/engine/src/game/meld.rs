@@ -19,7 +19,8 @@ use crate::types::ability::{
 };
 use crate::types::events::GameEvent;
 use crate::types::game_state::{
-    BatchCompletion, GameState, LiminalEntry, LiminalEntryKind, MeldSelection, WaitingFor,
+    BatchCompletion, FullEvalClass, GameState, LiminalEntry, LiminalEntryKind, MeldSelection,
+    WaitingFor,
 };
 use crate::types::identifiers::ObjectId;
 use crate::types::proposed_event::EtbTapState;
@@ -417,7 +418,7 @@ pub(crate) fn finish_deferred_meld_entry(
     mut context: MeldSelection,
     events: &mut Vec<GameEvent>,
 ) {
-    crate::game::layers::mark_layers_full(state);
+    crate::game::layers::mark_layers_full_classed(state, FullEvalClass::FormChange);
     crate::game::layers::flush_layers(state);
 
     let Some(object) = state.objects.get(&context.source_id) else {
@@ -467,7 +468,7 @@ pub(crate) fn finish_meld_attack_choice(
     selected: AttackTarget,
     events: &mut Vec<GameEvent>,
 ) {
-    crate::game::layers::mark_layers_full(state);
+    crate::game::layers::mark_layers_full_classed(state, FullEvalClass::FormChange);
     crate::game::layers::flush_layers(state);
     let (controller, is_creature) = state
         .objects
@@ -520,6 +521,7 @@ fn commit_final_attack_status(
             defending_player,
         ));
         state.layers_dirty.mark_full();
+        state.layers_full_classes.insert(FullEvalClass::FormChange);
     }
 }
 

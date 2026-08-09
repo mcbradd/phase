@@ -9,7 +9,7 @@ use crate::types::ability::{
     AbilityCost, AbilityDefinition, CastVariantPaid, Effect, NinjutsuVariant, RuntimeHandler,
 };
 use crate::types::events::GameEvent;
-use crate::types::game_state::{GameState, WaitingFor};
+use crate::types::game_state::{FullEvalClass, GameState, WaitingFor};
 use crate::types::identifiers::{CardId, ObjectId};
 use crate::types::keywords::{
     EmbalmCost, EternalizeCost, FlashbackCost, GiftKind, Keyword, KeywordKind, ProtectionTarget,
@@ -1002,7 +1002,7 @@ pub(crate) fn finish_ninjutsu_entry(
         source_id: ninjutsu_obj_id,
     });
 
-    crate::game::layers::mark_layers_full(state);
+    crate::game::layers::mark_layers_full_classed(state, FullEvalClass::Other);
 }
 
 /// Detect which activated-family `NinjutsuVariant` a game object has, if any.

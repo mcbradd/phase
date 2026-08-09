@@ -1,6 +1,6 @@
 use crate::types::ability::{Effect, EffectError, EffectKind, FaceDownProfile, ResolvedAbility};
 use crate::types::events::GameEvent;
-use crate::types::game_state::GameState;
+use crate::types::game_state::{FullEvalClass, GameState};
 
 /// CR 708.2a + CR 708.2b + CR 712.16: Turn the face-up permanent(s) selected by
 /// the resolving ability's `target` slot face down via a spell or ability
@@ -78,7 +78,7 @@ pub fn resolve(
     // CR 613: the new face-down copiable characteristics (Layer 1) require a
     // full layer re-derive (mirrors the turn-face-up path).
     if changed {
-        crate::game::layers::mark_layers_full(state);
+        crate::game::layers::mark_layers_full_classed(state, FullEvalClass::FormChange);
     }
 
     events.push(GameEvent::EffectResolved {

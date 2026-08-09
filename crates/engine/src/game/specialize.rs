@@ -10,7 +10,7 @@ use crate::game::printed_cards::{
 };
 use crate::types::card::CardFace;
 use crate::types::events::GameEvent;
-use crate::types::game_state::{GameState, LKISnapshot};
+use crate::types::game_state::{FullEvalClass, GameState, LKISnapshot};
 use crate::types::identifiers::ObjectId;
 use crate::types::keywords::Keyword;
 use crate::types::mana::ManaColor;
@@ -158,7 +158,7 @@ pub fn specialize_permanent(
         .retain(|k| !matches!(k, Keyword::Specialize(_)));
     obj.base_keywords
         .retain(|k| !matches!(k, Keyword::Specialize(_)));
-    layers::mark_layers_full(state);
+    layers::mark_layers_full_classed(state, FullEvalClass::FormChange);
 
     events.push(GameEvent::Specialized { object_id, color });
     Ok(())

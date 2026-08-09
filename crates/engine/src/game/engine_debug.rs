@@ -10,7 +10,8 @@ use crate::types::card_type::Supertype;
 use crate::types::counter::CounterType;
 use crate::types::events::GameEvent;
 use crate::types::game_state::{
-    ActionResult, DebugCardEntrySource, GameState, PendingDebugCardEntries, WaitingFor,
+    ActionResult, DebugCardEntrySource, FullEvalClass, GameState, PendingDebugCardEntries,
+    WaitingFor,
 };
 use crate::types::identifiers::{CardId, ObjectId};
 use crate::types::player::{PlayerCounterKind, PlayerId};
@@ -58,7 +59,7 @@ pub fn apply_debug_action(
                 super::sba::check_state_based_actions(state, events);
                 super::triggers::process_triggers(state, events);
             }
-            crate::game::layers::mark_layers_full(state);
+            crate::game::layers::mark_layers_full_classed(state, FullEvalClass::TestSetup);
         }
 
         DebugAction::CreateCard { .. } => {
@@ -91,7 +92,7 @@ pub fn apply_debug_action(
             // allow-raw-zone: debug-only object deletion forces state, not a CR zone-change event (CR 400.1).
             zones::remove_from_zone(state, object_id, zone, owner);
             state.objects.remove(&object_id);
-            crate::game::layers::mark_layers_full(state);
+            crate::game::layers::mark_layers_full_classed(state, FullEvalClass::TestSetup);
         }
 
         DebugAction::Sacrifice { object_id } => {
@@ -207,7 +208,7 @@ pub fn apply_debug_action(
             if let Some(t) = toughness {
                 obj.base_toughness = Some(t);
             }
-            crate::game::layers::mark_layers_full(state);
+            crate::game::layers::mark_layers_full_classed(state, FullEvalClass::TestSetup);
         }
 
         DebugAction::ModifyCounters {
@@ -250,7 +251,7 @@ pub fn apply_debug_action(
                 let lore = obj.counters.get(&CounterType::Lore).copied().unwrap_or(0);
                 obj.class_level = Some((lore as u8).max(1));
             }
-            crate::game::layers::mark_layers_full(state);
+            crate::game::layers::mark_layers_full_classed(state, FullEvalClass::TestSetup);
         }
 
         DebugAction::SetTapped { object_id, tapped } => {
@@ -293,7 +294,7 @@ pub fn apply_debug_action(
             // `apply_battlefield_entry_controller_override` writes both fields.
             obj.base_controller = Some(controller);
             obj.controller = controller;
-            crate::game::layers::mark_layers_full(state);
+            crate::game::layers::mark_layers_full_classed(state, FullEvalClass::TestSetup);
         }
 
         DebugAction::SetSummoningSickness { object_id, sick } => {
@@ -330,7 +331,7 @@ pub fn apply_debug_action(
                     }
                 }
             }
-            crate::game::layers::mark_layers_full(state);
+            crate::game::layers::mark_layers_full_classed(state, FullEvalClass::TestSetup);
         }
 
         DebugAction::Attach { object_id, target } => {
@@ -345,7 +346,7 @@ pub fn apply_debug_action(
                     attach_to_player(state, object_id, target_player);
                 }
             }
-            crate::game::layers::mark_layers_full(state);
+            crate::game::layers::mark_layers_full_classed(state, FullEvalClass::TestSetup);
         }
 
         DebugAction::Detach { object_id } => {
@@ -359,7 +360,7 @@ pub fn apply_debug_action(
             if let Some(obj) = state.objects.get_mut(&object_id) {
                 obj.attached_to = None;
             }
-            crate::game::layers::mark_layers_full(state);
+            crate::game::layers::mark_layers_full_classed(state, FullEvalClass::TestSetup);
         }
 
         DebugAction::GrantKeyword { object_id, keyword } => {
@@ -372,7 +373,7 @@ pub fn apply_debug_action(
             if !obj.base_keywords.contains(&keyword) {
                 obj.base_keywords.push(keyword);
             }
-            crate::game::layers::mark_layers_full(state);
+            crate::game::layers::mark_layers_full_classed(state, FullEvalClass::TestSetup);
         }
 
         DebugAction::RemoveKeyword { object_id, keyword } => {
@@ -380,7 +381,7 @@ pub fn apply_debug_action(
             // CR 613.1 + CR 613.1f: write the base keyword set (the Layer-6 input)
             // so the removal survives the layer recompute; see GrantKeyword above.
             obj.base_keywords.retain(|k| k != &keyword);
-            crate::game::layers::mark_layers_full(state);
+            crate::game::layers::mark_layers_full_classed(state, FullEvalClass::TestSetup);
         }
 
         DebugAction::SetLife { player_id, life } => {
@@ -762,7 +763,7 @@ pub fn route_debug_create_to_battlefield(
         // construction (always `Done`), so the result is safely discarded.
         let req = crate::game::zone_pipeline::ZoneMoveRequest::debug(object_id, Zone::Battlefield);
         crate::game::zone_pipeline::move_object(state, req, &mut events);
-        crate::game::layers::mark_layers_full(state);
+        crate::game::layers::mark_layers_full_classed(state, FullEvalClass::TestSetup);
         return ActionResult {
             events,
             waiting_for: state.waiting_for.clone(),

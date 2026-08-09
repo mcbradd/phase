@@ -11,7 +11,7 @@ use crate::types::ability_visit::{
 use crate::types::counter::{CounterMatch, CounterType};
 use crate::types::events::{GameEvent, ManaTapState};
 use crate::types::game_state::{
-    CostResume, GameState, ManaAbilityCostCursor, ManaAbilityCostParent,
+    CostResume, FullEvalClass, GameState, ManaAbilityCostCursor, ManaAbilityCostParent,
     ManaAbilityCostParentLifecycle, ManaAbilityCostResolutionMode, ManaAbilityResume, ManaChoice,
     ManaChoiceContext, ManaChoicePrompt, PayCostKind, PayableResource, PendingCostMoveResume,
     PendingManaAbility, ProductionOverride, WaitingFor,
@@ -3965,6 +3965,7 @@ fn pay_mana_sub_cost(
             EngineError::ActionNotAllowed("Mana pool changed before payment applied".to_string())
         })?;
     state.layers_dirty.mark_full();
+    state.layers_full_classes.insert(FullEvalClass::Other);
     // CR 605.3b: The player's mana pool mutation is the public signal; no
     // dedicated event exists for ability mana payments. The pool-diff is
     // surfaced via the standard state-update machinery.
@@ -9668,7 +9669,7 @@ mod tests {
             &mut events,
         )
         .unwrap();
-        crate::game::layers::mark_layers_full(state);
+        crate::game::layers::mark_layers_full_classed(state, FullEvalClass::TestSetup);
         crate::game::layers::flush_layers(state);
     }
 
@@ -9714,7 +9715,7 @@ mod tests {
         // stored `ChosenAttribute::Color(Red)` persists on the permanent (CR 400.7).
         crate::game::layers::prune_end_of_turn_effects(&mut state);
         state.turn_number += 1;
-        crate::game::layers::mark_layers_full(&mut state);
+        crate::game::layers::mark_layers_full_classed(&mut state, FullEvalClass::TestSetup);
         crate::game::layers::flush_layers(&mut state);
 
         // Turn N+1: choose Green.

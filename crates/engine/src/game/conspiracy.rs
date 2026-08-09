@@ -31,7 +31,7 @@
 
 use crate::game::game_object::GameObject;
 use crate::types::card_type::CoreType;
-use crate::types::game_state::GameState;
+use crate::types::game_state::{FullEvalClass, GameState};
 use crate::types::identifiers::ObjectId;
 use crate::types::player::PlayerId;
 use crate::types::zones::Zone;
@@ -112,7 +112,7 @@ pub fn start_with_conspiracy(state: &mut GameState, id: ObjectId, hidden_agenda:
 
     // CR 611.2: a newly functioning command-zone static source changes the set
     // of continuous-effect generators, so the cached layer state must be rebuilt.
-    crate::game::layers::mark_layers_full(state);
+    crate::game::layers::mark_layers_full_classed(state, FullEvalClass::ChosenMarker);
 }
 
 /// CR 905.4a + CR 702.106: Turn a face-down hidden-agenda conspiracy face up.
@@ -130,6 +130,6 @@ pub fn turn_hidden_agenda_face_up(state: &mut GameState, id: ObjectId, player: P
         return false;
     }
     obj.face_down = false;
-    crate::game::layers::mark_layers_full(state);
+    crate::game::layers::mark_layers_full_classed(state, FullEvalClass::ChosenMarker);
     true
 }

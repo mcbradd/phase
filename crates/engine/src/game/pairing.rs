@@ -1,5 +1,5 @@
 use crate::types::card_type::CoreType;
-use crate::types::game_state::GameState;
+use crate::types::game_state::{FullEvalClass, GameState};
 use crate::types::identifiers::ObjectId;
 use crate::types::zones::Zone;
 use crate::{
@@ -33,7 +33,7 @@ pub fn pair_objects(
         obj.paired_with = Some(first);
         obj.pair_controller = Some(controller);
     }
-    crate::game::layers::mark_layers_full(state);
+    crate::game::layers::mark_layers_full_classed(state, FullEvalClass::Attach);
 }
 
 pub fn break_pair(state: &mut GameState, object_id: ObjectId) {
@@ -48,7 +48,7 @@ pub fn break_pair(state: &mut GameState, object_id: ObjectId) {
                 partner_obj.pair_controller = None;
             }
         }
-        crate::game::layers::mark_layers_full(state);
+        crate::game::layers::mark_layers_full_classed(state, FullEvalClass::Attach);
     }
 }
 

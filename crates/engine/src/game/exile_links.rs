@@ -1,7 +1,7 @@
 use serde::Serialize;
 
 use crate::types::ability::{CastingPermission, Duration, ResolvedAbility};
-use crate::types::game_state::{ExileLink, ExileLinkKind, GameState};
+use crate::types::game_state::{ExileLink, ExileLinkKind, FullEvalClass, GameState};
 use crate::types::identifiers::ObjectId;
 
 const LINKED_EXILE_CONSUMER_TAGS: &[&str] = &[
@@ -142,6 +142,7 @@ fn expire_until_source_exiles_another_card_durations(state: &mut GameState, sour
     });
     if state.transient_continuous_effects.len() != before {
         state.layers_dirty.mark_full();
+        state.layers_full_classes.insert(FullEvalClass::TrackedSet);
     }
 }
 

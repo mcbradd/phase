@@ -17,7 +17,7 @@ use crate::types::ability::{
 use crate::types::card_type::CoreType;
 use crate::types::counter::CounterType;
 use crate::types::events::GameEvent;
-use crate::types::game_state::{DamageRecord, GameState};
+use crate::types::game_state::{DamageRecord, FullEvalClass, GameState};
 use crate::types::identifiers::ObjectId;
 use crate::types::keywords::KeywordKind;
 use crate::types::player::{PlayerCounterKind, PlayerId};
@@ -572,7 +572,7 @@ pub(crate) fn apply_damage_after_replacement(
                         target_obj.dealt_deathtouch_damage = true;
                     }
                 }
-                crate::game::layers::mark_layers_full(state);
+                crate::game::layers::mark_layers_full_classed(state, FullEvalClass::Damage);
             } else if is_creature {
                 if let Some(target_obj) = state.objects.get_mut(obj_id) {
                     // CR 120.3e: Damage to a creature marks damage.
@@ -839,6 +839,7 @@ pub(crate) fn apply_damage_after_replacement(
             && state.objects_that_dealt_damage.insert(ctx.source_id)
         {
             state.layers_dirty.mark_full();
+            state.layers_full_classes.insert(FullEvalClass::Damage);
         }
     }
 

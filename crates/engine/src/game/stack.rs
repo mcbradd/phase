@@ -8,9 +8,9 @@ use crate::types::card_type::CoreType;
 use crate::types::counter::CounterType;
 use crate::types::events::GameEvent;
 use crate::types::game_state::{
-    AutoMayChoice, CastOfferKind, CastingVariant, ExileLink, ExileLinkKind, GameState,
-    MayTriggerAutoChoiceKey, MayTriggerOrigin, PendingCounterPostAction, PendingSpellResolution,
-    StackEntry, StackEntryKind, StackPaidSnapshot, WaitingFor,
+    AutoMayChoice, CastOfferKind, CastingVariant, ExileLink, ExileLinkKind, FullEvalClass,
+    GameState, MayTriggerAutoChoiceKey, MayTriggerOrigin, PendingCounterPostAction,
+    PendingSpellResolution, StackEntry, StackEntryKind, StackPaidSnapshot, WaitingFor,
 };
 use crate::types::identifiers::{ObjectId, TriggerFiring};
 use crate::types::player::PlayerId;
@@ -1889,7 +1889,10 @@ pub fn resolve_top(state: &mut GameState, events: &mut Vec<GameEvent>) {
                                     }
                                 }
                                 if marked {
-                                    crate::game::layers::mark_layers_full(state);
+                                    crate::game::layers::mark_layers_full_classed(
+                                        state,
+                                        FullEvalClass::FormChange,
+                                    );
                                     events.push(GameEvent::Transformed { object_id });
                                 }
                             }

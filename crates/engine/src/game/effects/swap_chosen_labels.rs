@@ -1,6 +1,6 @@
 use crate::types::ability::{ChosenAttribute, Effect, EffectError, EffectKind, ResolvedAbility};
 use crate::types::events::GameEvent;
-use crate::types::game_state::GameState;
+use crate::types::game_state::{FullEvalClass, GameState};
 
 /// CR 311.7 + CR 607.2d / CR 607.2m (by analogy): resolve the symmetric per-player
 /// anchor swap "each player who last chose `first` chooses `second`, and vice
@@ -48,7 +48,7 @@ pub fn resolve(
 
     // CR 613.1: the anchor labels gate the land-drop static and the creature
     // anthem; a swap changes both affected sets — recompute layers.
-    crate::game::layers::mark_layers_full(state);
+    crate::game::layers::mark_layers_full_classed(state, FullEvalClass::ChosenMarker);
 
     events.push(GameEvent::EffectResolved {
         kind: EffectKind::from(&ability.effect),

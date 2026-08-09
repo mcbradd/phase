@@ -1,6 +1,6 @@
 use crate::types::ability::{EffectError, EffectKind, ResolvedAbility};
 use crate::types::events::GameEvent;
-use crate::types::game_state::GameState;
+use crate::types::game_state::{FullEvalClass, GameState};
 
 /// CR 719.2: Resolve the "solve" action — set the source Case's case_state.is_solved = true.
 pub fn resolve(
@@ -18,7 +18,7 @@ pub fn resolve(
                 events.push(GameEvent::CaseSolved {
                     object_id: source_id,
                 });
-                crate::game::layers::mark_layers_full(state);
+                crate::game::layers::mark_layers_full_classed(state, FullEvalClass::ChosenMarker);
             }
         }
     }

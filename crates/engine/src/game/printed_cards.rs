@@ -18,7 +18,7 @@ use crate::types::ability_visit::{
 use crate::types::card::{CardFace, CardLayout, LayoutKind, PrintedCardRef, PrintedLoyalty};
 use crate::types::card_type::{CardType, CoreType};
 use crate::types::counter::CounterType;
-use crate::types::game_state::{GameState, MeldPairRecord};
+use crate::types::game_state::{FullEvalClass, GameState, MeldPairRecord};
 use crate::types::identifiers::ObjectId;
 use crate::types::keywords::Keyword;
 use crate::types::mana::{ManaColor, ManaCost, ManaCostShard};
@@ -1421,7 +1421,7 @@ fn repair_battlefield_trigger_index_after_face_reapply(
     changed_battlefield: bool,
 ) {
     if changed_battlefield {
-        crate::game::layers::mark_layers_full(state);
+        crate::game::layers::mark_layers_full_classed(state, FullEvalClass::FormChange);
         crate::types::game_state::TriggerIndex::rebuild_from_battlefield(state);
     }
 }

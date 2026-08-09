@@ -3,7 +3,7 @@ use crate::types::ability::{
     Effect, EffectError, EffectKind, EffectScope, ResolvedAbility, TargetFilter, TargetRef,
 };
 use crate::types::events::GameEvent;
-use crate::types::game_state::GameState;
+use crate::types::game_state::{FullEvalClass, GameState};
 use crate::types::identifiers::ObjectId;
 use crate::types::statics::{StaticMode, StaticModeKind};
 
@@ -140,7 +140,7 @@ pub fn resolve(
         }
     }
 
-    crate::game::layers::mark_layers_full(state);
+    crate::game::layers::mark_layers_full_classed(state, FullEvalClass::ChosenMarker);
 
     events.push(GameEvent::EffectResolved {
         kind: EffectKind::Suspect,
@@ -185,7 +185,7 @@ pub fn resolve_unsuspect(
     }
 
     if any_flipped {
-        crate::game::layers::mark_layers_full(state);
+        crate::game::layers::mark_layers_full_classed(state, FullEvalClass::ChosenMarker);
     }
 
     events.push(GameEvent::EffectResolved {

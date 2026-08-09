@@ -16,7 +16,7 @@ use crate::types::ability::{
     Effect, EffectError, EffectKind, ParentTargetMissingReason, ResolvedAbility, TargetFilter,
 };
 use crate::types::events::GameEvent;
-use crate::types::game_state::{GameState, StackEntryKind};
+use crate::types::game_state::{FullEvalClass, GameState, StackEntryKind};
 
 /// CR 702.184a/702.122/702.171: object referent for Stationed/VehicleCrewed/Saddled
 /// trigger anaphora while a triggered ability is resolving.
@@ -159,7 +159,7 @@ pub fn resolve(
         // must be re-evaluated — otherwise `obj.power`/`obj.toughness` and public
         // state stay at their pre-effect values until some unrelated future
         // layer-dirtying event. The `Full` flush also marks public state dirty.
-        crate::game::layers::mark_layers_full(state);
+        crate::game::layers::mark_layers_full_classed(state, FullEvalClass::TransientEffect);
         events.push(GameEvent::EffectResolved {
             kind: EffectKind::from(&ability.effect),
             source_id: ability.source_id,
@@ -179,7 +179,7 @@ mod tests {
         TargetRef, ZoneOwner,
     };
     use crate::types::events::GameEvent;
-    use crate::types::game_state::GameState;
+    use crate::types::game_state::{FullEvalClass, GameState};
     use crate::types::identifiers::{CardId, ObjectId};
     use crate::types::keywords::Keyword;
     use crate::types::player::PlayerId;
@@ -240,7 +240,7 @@ mod tests {
             obj.base_toughness = Some(2);
         }
         // Establish the pre-effect live P/T through the normal layer pass.
-        crate::game::layers::mark_layers_full(&mut state);
+        crate::game::layers::mark_layers_full_classed(&mut state, FullEvalClass::TestSetup);
         crate::game::layers::flush_layers(&mut state);
         assert_eq!(state.objects.get(&id).unwrap().power, Some(2));
 
@@ -281,7 +281,7 @@ mod tests {
             obj.base_power = Some(1);
             obj.base_toughness = Some(1);
         }
-        crate::game::layers::mark_layers_full(&mut state);
+        crate::game::layers::mark_layers_full_classed(&mut state, FullEvalClass::TestSetup);
         crate::game::layers::flush_layers(&mut state);
 
         let ability = ResolvedAbility::new(
@@ -888,7 +888,7 @@ mod tests {
             obj.base_power = Some(2);
             obj.base_toughness = Some(2);
         }
-        crate::game::layers::mark_layers_full(&mut state);
+        crate::game::layers::mark_layers_full_classed(&mut state, FullEvalClass::TestSetup);
         crate::game::layers::flush_layers(&mut state);
 
         let modification = PerpetualModification::Become {

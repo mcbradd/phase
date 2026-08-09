@@ -9,7 +9,7 @@ use crate::game::functioning_abilities::static_kind_present;
 use crate::types::ability::{StaticDefinition, TargetFilter, TargetRef};
 use crate::types::card_type::{CoreType, Supertype};
 use crate::types::events::GameEvent;
-use crate::types::game_state::GameState;
+use crate::types::game_state::{FullEvalClass, GameState};
 use crate::types::identifiers::{ObjectId, ObjectIncarnationRef};
 use crate::types::keywords::Keyword;
 use crate::types::mana::ManaColor;
@@ -513,6 +513,7 @@ fn push_attacker_and_journal(
         // attacking is an attacking creature; re-evaluate Layer 6
         // FilterProp::Attacking { defender: None } grants immediately.
         state.layers_dirty.mark_full();
+        state.layers_full_classes.insert(FullEvalClass::Combat);
 
         // CR 733 + CR 508.4: the defending player and attack target are a CHOICE
         // the rules assign to the controller; record the settled pair so replay
@@ -702,6 +703,7 @@ pub fn place_blocking(state: &mut GameState, blocker_id: ObjectId, attacker_id: 
     // CR 506.4 + CR 613.1f: a new blocking creature can satisfy Layer 6
     // `FilterProp::Blocking` grants; re-evaluate continuous effects.
     state.layers_dirty.mark_full();
+    state.layers_full_classes.insert(FullEvalClass::Combat);
     // CR 733: journal the settled block. All four writes above (the sticky
     // blocked bit, both blocker maps, and the per-turn blocked set) follow
     // structurally from this blocker/attacker pair, so the pair plus the prior
@@ -740,6 +742,7 @@ pub fn mark_attacker_blocked(state: &mut GameState, oid: ObjectId) -> bool {
     info.blocked = true;
     // CR 613.1f: `FilterProp::Blocked` grants may now apply; re-evaluate layers.
     state.layers_dirty.mark_full();
+    state.layers_full_classes.insert(FullEvalClass::Combat);
     // CR 733: journal only the false-to-true transition, so the applier can
     // require the bit is still clear before installing it.
     if let Some(reference) = reference.filter(|_| !already_blocked) {
@@ -900,6 +903,7 @@ pub fn apply_resolved_combat_membership(
             // pruning a pure blocker leaves the layer system alone.
             if prune_object_from_combat(state, object_id) {
                 state.layers_dirty.mark_full();
+                state.layers_full_classes.insert(FullEvalClass::Combat);
             }
             return Ok(());
         }
@@ -909,6 +913,7 @@ pub fn apply_resolved_combat_membership(
     // Layer 6 `FilterProp::Attacking` / `Blocking` / `Blocked` grants;
     // re-evaluate exactly as the live authorities do.
     state.layers_dirty.mark_full();
+    state.layers_full_classes.insert(FullEvalClass::Combat);
     Ok(())
 }
 
@@ -4854,6 +4859,7 @@ pub(super) fn commit_attack_declaration(
     // FilterProp::Attacking { defender: None } (e.g. Crossway Troublemakers) to re-evaluate now, so
     // the grant is live for the whole combat, not just after damage.
     state.layers_dirty.mark_full();
+    state.layers_full_classes.insert(FullEvalClass::Combat);
     let attacker_count = combat.attackers.len();
     let creature_attacked_defenders: Vec<(ObjectId, PlayerId)> = combat
         .attackers

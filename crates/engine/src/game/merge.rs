@@ -54,7 +54,7 @@ use crate::game::printed_cards::intrinsic_copiable_values;
 use crate::game::zone_pipeline::{self, BatchMoveResult, ZoneMoveRequest};
 use crate::types::ability::{ContinuousModification, CopiableValues, Duration, TargetFilter};
 use crate::types::events::GameEvent;
-use crate::types::game_state::GameState;
+use crate::types::game_state::{FullEvalClass, GameState};
 use crate::types::identifiers::ObjectId;
 use crate::types::proposed_event::AppliedReplacementKey;
 use crate::types::zones::Zone;
@@ -314,7 +314,7 @@ pub(crate) fn remove_merge_layer_effect(state: &mut GameState, target_id: Object
     if let Some(obj) = state.objects.get_mut(&target_id) {
         obj.merge_layer_effect_id = None;
     }
-    crate::game::layers::mark_layers_full(state);
+    crate::game::layers::mark_layers_full_classed(state, FullEvalClass::FormChange);
 }
 
 pub(crate) fn install_merge_layer_effect(

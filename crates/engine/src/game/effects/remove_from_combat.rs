@@ -3,7 +3,7 @@ use crate::types::ability::{
     Effect, EffectError, EffectKind, ResolvedAbility, TargetFilter, TargetRef,
 };
 use crate::types::events::GameEvent;
-use crate::types::game_state::GameState;
+use crate::types::game_state::{FullEvalClass, GameState};
 use crate::types::identifiers::ObjectIncarnationRef;
 use crate::types::resolved_commands::{
     ResolvedCombatMembershipCommand, ResolvedCombatMembershipEdit,
@@ -127,6 +127,7 @@ pub fn remove_object_from_combat(state: &mut GameState, oid: crate::types::ident
     // affect FilterProp::Attacking { defender: None } statics.
     if attacker_removed {
         state.layers_dirty.mark_full();
+        state.layers_full_classes.insert(FullEvalClass::Combat);
     }
 
     if let Some(reference) = reference {
