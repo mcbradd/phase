@@ -89,15 +89,77 @@ impl ContinuousModification {
     /// `copy_grants_continuous_static_covers_every_copy_layer_variant`
     /// (`game/layers.rs`) pins the two together.
     pub fn is_copy_layer(&self) -> bool {
-        matches!(
-            self,
+        // Exhaustive on purpose (#6932 follow-up): the `matches!` form
+        // answered `false` for any variant nobody remembered to list, so a
+        // future `Layer::Copy` variant would silently skip every consumer
+        // gated on this predicate — the defect class that PR fixed. A new
+        // variant now fails to compile until it classifies itself here,
+        // making this the compiler-enforced authority the wildcard arms in
+        // `game/layers.rs` (`copy_grants_continuous_static`,
+        // `copy_grants_copy_layer_static`) lean on via their debug asserts.
+        match self {
             ContinuousModification::CopyValues { .. }
-                | ContinuousModification::CopyChosen
-                | ContinuousModification::SetName { .. }
-                | ContinuousModification::RetainPrintedTriggerFromSource { .. }
-                | ContinuousModification::RetainPrintedAbilityFromSource { .. }
-                | ContinuousModification::RetainAllOtherAbilitiesFromSource
-        )
+            | ContinuousModification::CopyChosen
+            | ContinuousModification::SetName { .. }
+            | ContinuousModification::RetainPrintedTriggerFromSource { .. }
+            | ContinuousModification::RetainPrintedAbilityFromSource { .. }
+            | ContinuousModification::RetainAllOtherAbilitiesFromSource => true,
+            // Layers 2-7 plus the resolution-consumed, never-layered payload
+            // variants (`AddCounterOnEnter`, `SetStartingLoyalty`,
+            // `RemoveManaCost`, the three combat-assignment variants). Named
+            // one by one — totality, not a fallback, is the guard.
+            ContinuousModification::SetTextName { .. }
+            | ContinuousModification::AddPower { .. }
+            | ContinuousModification::AddToughness { .. }
+            | ContinuousModification::SetPower { .. }
+            | ContinuousModification::SetToughness { .. }
+            | ContinuousModification::AddKeyword { .. }
+            | ContinuousModification::RemoveKeyword { .. }
+            | ContinuousModification::GrantAbility { .. }
+            | ContinuousModification::GrantAllActivatedAbilitiesOf { .. }
+            | ContinuousModification::GrantAllTriggeredAbilitiesOf { .. }
+            | ContinuousModification::GrantTrigger { .. }
+            | ContinuousModification::GrantReplacement { .. }
+            | ContinuousModification::RemoveAllAbilities
+            | ContinuousModification::AddType { .. }
+            | ContinuousModification::RemoveType { .. }
+            | ContinuousModification::AddSubtype { .. }
+            | ContinuousModification::RemoveSubtype { .. }
+            | ContinuousModification::SetCardTypes { .. }
+            | ContinuousModification::RemoveAllSubtypes { .. }
+            | ContinuousModification::SetDynamicPower { .. }
+            | ContinuousModification::SetDynamicToughness { .. }
+            | ContinuousModification::SetPowerDynamic { .. }
+            | ContinuousModification::SetToughnessDynamic { .. }
+            | ContinuousModification::AddDynamicPower { .. }
+            | ContinuousModification::AddDynamicToughness { .. }
+            | ContinuousModification::AddDynamicKeyword { .. }
+            | ContinuousModification::AddKeywordWithDerivedCost { .. }
+            | ContinuousModification::AddAllCreatureTypes
+            | ContinuousModification::AddAllBasicLandTypes
+            | ContinuousModification::AddAllLandTypes
+            | ContinuousModification::AddChosenSubtype { .. }
+            | ContinuousModification::AddChosenColor { .. }
+            | ContinuousModification::RemoveChosenKeyword
+            | ContinuousModification::AddChosenKeyword
+            | ContinuousModification::SetColor { .. }
+            | ContinuousModification::AddColor { .. }
+            | ContinuousModification::AddStaticMode { .. }
+            | ContinuousModification::GrantStaticAbility { .. }
+            | ContinuousModification::SwitchPowerToughness
+            | ContinuousModification::AssignDamageFromToughness
+            | ContinuousModification::AssignDamageAsThoughUnblocked
+            | ContinuousModification::AssignNoCombatDamage
+            | ContinuousModification::ChangeController
+            | ContinuousModification::SetBasicLandType { .. }
+            | ContinuousModification::SetChosenBasicLandType
+            | ContinuousModification::SetChosenName
+            | ContinuousModification::AddSupertype { .. }
+            | ContinuousModification::RemoveSupertype { .. }
+            | ContinuousModification::AddCounterOnEnter { .. }
+            | ContinuousModification::SetStartingLoyalty { .. }
+            | ContinuousModification::RemoveManaCost => false,
+        }
     }
 
     /// Returns the appropriate Layer for this modification type.
