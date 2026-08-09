@@ -6408,6 +6408,246 @@ impl LayersDirty {
     }
 }
 
+/// Why a `LayersDirty::Full` flush was requested — pure telemetry attribution,
+/// never consulted by any rules decision.
+///
+/// CR 613.1 fixes what a full layer pass *computes*; it says nothing about which
+/// mutation made the cache stale. These classes are that missing "who marked it"
+/// axis, so a profile can tell an unavoidable full pass (CR 611.3a: a static's
+/// continuous effect applies to whatever its text indicates at any given moment,
+/// so a board change genuinely can flip it) from a conservative over-mark that
+/// could be narrowed to the incremental entry path.
+///
+/// A single flush window may carry several classes: marks accumulate into a
+/// [`FullEvalClassSet`] and are drained by `flush_layers`, so per-class window
+/// counts are per-class-per-window presence, NOT a partition of the window
+/// total. Sites that still call `LayersDirty::mark_full` directly land in the
+/// "unattributed" bucket, which is itself the conversion-coverage signal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[repr(u8)]
+pub enum FullEvalClass {
+    /// Battlefield entry originating from Hand or Exile (outside the entry
+    /// carve-out that would otherwise take the incremental path).
+    EntryHandExile,
+    /// Any move to or from Hand (draw, discard, bounce).
+    HandChurn,
+    /// Any move out of the battlefield.
+    BattlefieldExit,
+    /// `static_layer_dependency_for_zone_transition` reported a zone-sensitive
+    /// static on either side of a move.
+    ZoneStaticDependency,
+    /// `mark_layers_full_if_top_of_library_static_live`.
+    LibraryTop,
+    /// `mark_layers_full_if_life_reading_static_live`.
+    LifeTotal,
+    /// Transform / flip / morph / face-up / face-down / meld / merge /
+    /// specialize / bestow / prototype / cloak / stickers / text change.
+    FormChange,
+    /// Attach, unattach, or pairing change.
+    Attach,
+    /// Phasing in or out.
+    Phasing,
+    /// Control-change effects applied or ended (CR 613.1b, layer 2).
+    ControlChange,
+    /// Counter add / remove / annihilation.
+    Counters,
+    /// Damage marked or removed.
+    Damage,
+    /// Combat-state mutation (attack/block declaration, removal from combat).
+    Combat,
+    /// State-based-action-driven designations (city's blessing, monarch, …).
+    Sba,
+    /// Transient continuous effect added, retargeted, or expired (pump,
+    /// perpetual, duration prunes, `GameState` TCE methods).
+    TransientEffect,
+    /// Tracked-set churn (exile links, remembered cards).
+    TrackedSet,
+    /// Chosen labels, ring-bearer, suspect, solved case, class level,
+    /// conspiracy naming.
+    ChosenMarker,
+    /// The AI-search legality-probe clone sanitizer resets the lattice to
+    /// `Full` on every cloned position; kept separate so probe volume cannot
+    /// drown the gameplay signal.
+    CloneReset,
+    /// Debug/scenario/test-only placement paths.
+    TestSetup,
+    /// Deliberately unclassified converted site.
+    Other,
+}
+
+impl FullEvalClass {
+    /// Every variant, ordered by [`Self::index`]. Single source of truth for
+    /// [`Self::COUNT`] and for the per-class telemetry arrays.
+    pub const ALL: [FullEvalClass; 20] = [
+        Self::EntryHandExile,
+        Self::HandChurn,
+        Self::BattlefieldExit,
+        Self::ZoneStaticDependency,
+        Self::LibraryTop,
+        Self::LifeTotal,
+        Self::FormChange,
+        Self::Attach,
+        Self::Phasing,
+        Self::ControlChange,
+        Self::Counters,
+        Self::Damage,
+        Self::Combat,
+        Self::Sba,
+        Self::TransientEffect,
+        Self::TrackedSet,
+        Self::ChosenMarker,
+        Self::CloneReset,
+        Self::TestSetup,
+        Self::Other,
+    ];
+
+    pub const COUNT: usize = Self::ALL.len();
+
+    /// Dense index into the per-class telemetry arrays and the
+    /// [`FullEvalClassSet`] bit position. Exhaustive by construction: a new
+    /// variant fails to compile here and must also be mirrored into [`Self::ALL`]
+    /// (asserted by `full_eval_class_all_is_dense_and_unique`).
+    pub const fn index(self) -> usize {
+        match self {
+            Self::EntryHandExile => 0,
+            Self::HandChurn => 1,
+            Self::BattlefieldExit => 2,
+            Self::ZoneStaticDependency => 3,
+            Self::LibraryTop => 4,
+            Self::LifeTotal => 5,
+            Self::FormChange => 6,
+            Self::Attach => 7,
+            Self::Phasing => 8,
+            Self::ControlChange => 9,
+            Self::Counters => 10,
+            Self::Damage => 11,
+            Self::Combat => 12,
+            Self::Sba => 13,
+            Self::TransientEffect => 14,
+            Self::TrackedSet => 15,
+            Self::ChosenMarker => 16,
+            Self::CloneReset => 17,
+            Self::TestSetup => 18,
+            Self::Other => 19,
+        }
+    }
+
+    /// Stable key used by the telemetry echo line.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::EntryHandExile => "EntryHandExile",
+            Self::HandChurn => "HandChurn",
+            Self::BattlefieldExit => "BattlefieldExit",
+            Self::ZoneStaticDependency => "ZoneStaticDependency",
+            Self::LibraryTop => "LibraryTop",
+            Self::LifeTotal => "LifeTotal",
+            Self::FormChange => "FormChange",
+            Self::Attach => "Attach",
+            Self::Phasing => "Phasing",
+            Self::ControlChange => "ControlChange",
+            Self::Counters => "Counters",
+            Self::Damage => "Damage",
+            Self::Combat => "Combat",
+            Self::Sba => "Sba",
+            Self::TransientEffect => "TransientEffect",
+            Self::TrackedSet => "TrackedSet",
+            Self::ChosenMarker => "ChosenMarker",
+            Self::CloneReset => "CloneReset",
+            Self::TestSetup => "TestSetup",
+            Self::Other => "Other",
+        }
+    }
+}
+
+/// Accumulated [`FullEvalClass`] marks for the current (not yet flushed) layer
+/// window. A `u32` bitset because [`FullEvalClass::COUNT`] ≤ 32; drained by
+/// `flush_layers` with a single `mem::take`.
+///
+/// INTENTIONALLY excluded from `impl PartialEq for GameState`: two positions
+/// with identical pending layer work must stay equal for AI-search dedup
+/// (CR 104.4b) even when they were marked by different mutations.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FullEvalClassSet(u32);
+
+impl FullEvalClassSet {
+    pub fn insert(&mut self, class: FullEvalClass) {
+        self.0 |= 1 << class.index();
+    }
+
+    pub const fn contains(self, class: FullEvalClass) -> bool {
+        self.0 & (1 << class.index()) != 0
+    }
+
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    pub fn iter(self) -> impl Iterator<Item = FullEvalClass> {
+        FullEvalClass::ALL
+            .into_iter()
+            .filter(move |c| self.contains(*c))
+    }
+}
+
+/// Why an `EnteredObjects` flush had to escalate to a full re-evaluation.
+///
+/// CR 613.1: a full pass is always correct, so every escalation is a *safe*
+/// answer — this enum only records which of the incremental preconditions was
+/// the one that failed, so an escalation-heavy profile points at the specific
+/// precondition worth narrowing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[repr(u8)]
+pub enum EscalationReason {
+    /// An entered object had already left the battlefield before the flush.
+    EnteredMissing,
+    /// An entered object's own characteristics block the incremental derive.
+    EnteredBlocksIncremental,
+    /// A live continuous effect is sourced by an incremental recipient and is
+    /// not restricted to that recipient set.
+    RecipientSourcedEffect,
+    /// A live effect's population-sensitive value forces a board-wide redraw.
+    PopulationForced,
+    /// The entry perturbed a pre-existing static's source-level enabling
+    /// condition (CR 611.3a).
+    ConditionPerturbed,
+}
+
+impl EscalationReason {
+    /// Every variant, ordered by [`Self::index`].
+    pub const ALL: [EscalationReason; 5] = [
+        Self::EnteredMissing,
+        Self::EnteredBlocksIncremental,
+        Self::RecipientSourcedEffect,
+        Self::PopulationForced,
+        Self::ConditionPerturbed,
+    ];
+
+    pub const COUNT: usize = Self::ALL.len();
+
+    /// Dense index into the per-reason telemetry arrays. Exhaustive by
+    /// construction; mirror new variants into [`Self::ALL`].
+    pub const fn index(self) -> usize {
+        match self {
+            Self::EnteredMissing => 0,
+            Self::EnteredBlocksIncremental => 1,
+            Self::RecipientSourcedEffect => 2,
+            Self::PopulationForced => 3,
+            Self::ConditionPerturbed => 4,
+        }
+    }
+
+    /// Stable key used by the telemetry echo line.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::EnteredMissing => "EnteredMissing",
+            Self::EnteredBlocksIncremental => "EnteredBlocksIncremental",
+            Self::RecipientSourcedEffect => "RecipientSourcedEffect",
+            Self::PopulationForced => "PopulationForced",
+            Self::ConditionPerturbed => "ConditionPerturbed",
+        }
+    }
+}
+
 /// Cache key for the source-level enabling-condition truth of a single
 /// CONTINUOUS static ability, used by the incremental layer-flush
 /// truth-delta short-circuit (`game/layers.rs`).
@@ -11457,6 +11697,15 @@ pub struct GameState {
     // serializing the (derived) entered-object set.
     #[serde(skip, default = "LayersDirty::full")]
     pub layers_dirty: LayersDirty,
+    /// Telemetry-only attribution for the pending `LayersDirty::Full` mark:
+    /// which mutation categories requested it. Drained by `flush_layers`.
+    /// Stored ALONGSIDE `layers_dirty` rather than inside `LayersDirty::Full`
+    /// so that (a) two states with identical pending work stay `eq` (the
+    /// lattice IS compared; see `impl PartialEq for GameState`) and (b) no
+    /// existing `LayersDirty::Full` pattern churns. `#[serde(skip)]` and
+    /// INTENTIONALLY excluded from `eq` — it never affects a rules decision.
+    #[serde(skip)]
+    pub layers_full_classes: FullEvalClassSet,
     /// CR 611.3a + CR 611.3b: truth of each CONTINUOUS static's SOURCE-LEVEL
     /// (non-recipient-context) enabling condition as of the last full
     /// `evaluate_layers`. Read by the incremental-flush truth-delta
@@ -16526,6 +16775,7 @@ impl GameState {
             post_replacement_token_substitution_count: None,
             deferred_entry_events: Vec::new(),
             layers_dirty: LayersDirty::full(),
+            layers_full_classes: FullEvalClassSet::default(),
             static_gate_truth: im::HashMap::new(),
             trigger_index: TriggerIndex::default(),
             replacement_index: ReplacementIndex::default(),
@@ -17035,6 +17285,8 @@ impl GameState {
         let removed = self.transient_continuous_effects.len() != before;
         if removed {
             self.layers_dirty.mark_full();
+            self.layers_full_classes
+                .insert(FullEvalClass::TransientEffect);
         }
         removed
     }
@@ -17222,6 +17474,8 @@ impl GameState {
             .max(command.resulting_next_end_effect_group_id);
         self.next_timestamp = self.next_timestamp.max(command.resulting_next_timestamp);
         self.layers_dirty.mark_full();
+        self.layers_full_classes
+            .insert(FullEvalClass::TransientEffect);
         Ok(())
     }
 
@@ -17235,6 +17489,8 @@ impl GameState {
         {
             tce.affected_recipient = Some(recipient);
             self.layers_dirty.mark_full();
+            self.layers_full_classes
+                .insert(FullEvalClass::TransientEffect);
         }
     }
 
@@ -17255,6 +17511,8 @@ impl GameState {
         {
             tce.duration_subject = Some(subject);
             self.layers_dirty.mark_full();
+            self.layers_full_classes
+                .insert(FullEvalClass::TransientEffect);
         }
     }
 
@@ -17411,6 +17669,11 @@ impl GameState {
         clone.next_interaction_serial = "1".to_string();
         clone.active_interaction_slots.clear();
         clone.layers_dirty = LayersDirty::full();
+        // Attribute the sanitizer's own reset, not whatever the live position
+        // happened to owe: legality probes clone once per candidate, so without
+        // its own class this path would dominate every other signal.
+        clone.layers_full_classes = FullEvalClassSet::default();
+        clone.layers_full_classes.insert(FullEvalClass::CloneReset);
         clone.public_state_dirty = PublicStateDirty::all_dirty();
         // PR-3 (Option C): snapshots stored in `loop_detect_ring` are produced BY this
         // method, so without clearing here each stored snapshot would carry a clone of
@@ -17972,6 +18235,7 @@ fn _gamestate_partition_is_total(s: &GameState) {
         post_replacement_token_choice_applied: _,
         deferred_entry_events: _,
         layers_dirty: _,
+        layers_full_classes: _,
         static_gate_truth: _,
         trigger_index: _,
         replacement_index: _,
@@ -18276,6 +18540,11 @@ impl PartialEq for GameState {
             && self.pending_replacement == other.pending_replacement
             && self.deferred_entry_events == other.deferred_entry_events
             && self.layers_dirty == other.layers_dirty
+            // `layers_full_classes` is INTENTIONALLY excluded: it is telemetry
+            // attribution for the SAME pending work `layers_dirty` already
+            // encodes. Two positions that both owe a full flush are the same
+            // position (CR 104.4b) whether a zone move or a counter change
+            // asked for it; comparing the bits would break AI-search dedup.
             // `static_gate_truth` is INTENTIONALLY excluded: unlike
             // `layers_dirty`/`public_state_dirty` (which encode pending work),
             // it is pure derived/self-healing state (reconstructed at the next
