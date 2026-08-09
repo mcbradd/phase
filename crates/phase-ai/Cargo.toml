@@ -30,6 +30,10 @@ tune = ["rayon"]
 # Scenario-backed benchmark binaries are opt-in: build them with
 # `cargo check -p phase-ai --features scenario-benches --bin combat-priority-bench --bin attack-scaling-bench`.
 scenario-benches = ["engine/test-support"]
+# Opt-in full-layer-eval attribution readout on `ai-commander`'s PODLAB-TELEM
+# line. Off by default: the counters are engine-side and cost one `u32` take
+# per flush when disabled.
+layers-attribution = ["engine/layers-attribution"]
 
 [[bin]]
 name = "ai-duel"
