@@ -19256,6 +19256,31 @@ mod tests {
         ResolvedAbility, TargetFilter,
     };
 
+    /// Telemetry only (no rules effect): the AI-search legality-probe clone
+    /// sanitizer resets the layer lattice on EVERY cloned position, so it must
+    /// attribute that reset to its own class instead of inheriting whatever the
+    /// live position happened to owe — otherwise probe volume drowns every
+    /// gameplay signal in the `layers-attribution` readout.
+    #[test]
+    fn normalize_for_loop_attributes_its_layer_reset_to_clone_reset() {
+        let mut state = GameState::new_two_player(42);
+        state.layers_dirty = LayersDirty::Clean;
+        state.layers_full_classes.insert(FullEvalClass::HandChurn);
+
+        let clone = state.normalize_for_loop();
+
+        assert_eq!(clone.layers_dirty, LayersDirty::Full);
+        assert!(clone
+            .layers_full_classes
+            .contains(FullEvalClass::CloneReset));
+        assert!(
+            !clone.layers_full_classes.contains(FullEvalClass::HandChurn),
+            "the live position's pending attribution must not ride along"
+        );
+        // Sanitizing a clone must not disturb the source position.
+        assert!(state.layers_full_classes.contains(FullEvalClass::HandChurn));
+    }
+
     fn scoped_selection_wire_fixture() -> PendingScopedLibrarySearch {
         let first = ObjectIncarnationRef::of(ObjectId(10), 1);
         let second = ObjectIncarnationRef::of(ObjectId(20), 2);
