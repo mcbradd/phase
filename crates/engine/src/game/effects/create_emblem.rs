@@ -5,7 +5,7 @@ use crate::types::ability::{
     TriggerDefinition,
 };
 use crate::types::events::GameEvent;
-use crate::types::game_state::GameState;
+use crate::types::game_state::{FullEvalClass, GameState};
 use crate::types::identifiers::{CardId, ObjectId};
 use crate::types::player::PlayerId;
 use crate::types::zones::Zone;
@@ -61,7 +61,7 @@ pub fn grant_emblem(
 
     // CR 114.1 + CR 611.1: An emblem can source continuous effects; conservatively
     // request a full layer re-evaluation.
-    crate::game::layers::mark_layers_full(state);
+    crate::game::layers::mark_layers_full_classed(state, FullEvalClass::Other);
     emblem_id
 }
 

@@ -5,7 +5,7 @@ use crate::game::quantity::{
     continuous_modification_uses_unspent_mana, static_condition_uses_unspent_mana,
 };
 use crate::types::events::{GameEvent, ManaTapState};
-use crate::types::game_state::{GameState, ShardChoice};
+use crate::types::game_state::{FullEvalClass, GameState, ShardChoice};
 use crate::types::identifiers::ObjectId;
 use crate::types::mana::{
     ManaCost, ManaCostShard, ManaExpiry, ManaPipId, ManaPool, ManaRestriction, ManaSpellGrant,
@@ -457,6 +457,7 @@ pub(crate) fn produce_mana_with_attributes_from_source_quality(
     }
     if final_count > 0 && has_unspent_mana_continuous_effects(state) {
         state.layers_dirty.mark_full();
+        state.layers_full_classes.insert(FullEvalClass::Other);
     }
     produced
 }

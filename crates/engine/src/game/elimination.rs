@@ -1,7 +1,9 @@
 use std::collections::HashSet;
 
 use crate::types::events::GameEvent;
-use crate::types::game_state::{ActiveSearchDecisionAuthority, GameState, WaitingFor};
+use crate::types::game_state::{
+    ActiveSearchDecisionAuthority, FullEvalClass, GameState, WaitingFor,
+};
 use crate::types::identifiers::ObjectIncarnationRef;
 use crate::types::match_config::MatchPhase;
 use crate::types::player::PlayerId;
@@ -436,7 +438,7 @@ fn end_control_effects_for_leaving_players(
 
     // CR 613.1b: recompute layers so control reverts to base_controller/owner for
     // every object whose control TCE was pruned. evaluate_layers is pure (no events).
-    super::layers::mark_layers_full(state);
+    super::layers::mark_layers_full_classed(state, FullEvalClass::ControlChange);
     super::layers::evaluate_layers(state);
 
     // CR 800.4a: "if there are any objects still controlled by that player, those
@@ -2986,7 +2988,7 @@ mod tests {
             vec![ContinuousModification::ChangeController],
             None,
         );
-        super::super::layers::mark_layers_full(state);
+        super::super::layers::mark_layers_full_classed(state, FullEvalClass::TestSetup);
         super::super::layers::evaluate_layers(state);
         id
     }
@@ -3054,7 +3056,7 @@ mod tests {
             vec![ContinuousModification::ChangeController],
             None,
         );
-        super::super::layers::mark_layers_full(&mut state);
+        super::super::layers::mark_layers_full_classed(&mut state, FullEvalClass::TestSetup);
         super::super::layers::evaluate_layers(&mut state);
         assert_eq!(controller_of(&state, c), PlayerId(1));
 
@@ -3126,7 +3128,7 @@ mod tests {
             o,
             PlayerId(1),
         );
-        super::super::layers::mark_layers_full(&mut state);
+        super::super::layers::mark_layers_full_classed(&mut state, FullEvalClass::TestSetup);
         super::super::layers::evaluate_layers(&mut state);
         assert_eq!(controller_of(&state, o), PlayerId(1));
 

@@ -8,7 +8,8 @@ use crate::types::ability::{
 use crate::types::card_type::CoreType;
 use crate::types::events::GameEvent;
 use crate::types::game_state::{
-    GameState, NamedChoiceSource, NamedChoiceSourceBinding, TriggerSourceContext, WaitingFor,
+    FullEvalClass, GameState, NamedChoiceSource, NamedChoiceSourceBinding, TriggerSourceContext,
+    WaitingFor,
 };
 use crate::types::mana::ManaColor;
 use crate::types::player::PlayerId;
@@ -264,7 +265,7 @@ pub(crate) fn bind_named_choice(
                 player.chosen_attributes.push(attr);
             }
             // CR 613.1: per-player labels feed statics/filters — re-run layers.
-            crate::game::layers::mark_layers_full(state);
+            crate::game::layers::mark_layers_full_classed(state, FullEvalClass::ChosenMarker);
         }
         state.last_named_choice = ChoiceValue::from_choice(choice_type, choice);
         return updated_context;
@@ -319,7 +320,10 @@ pub(crate) fn bind_named_choice(
                         // before its gated static could set its real P/T).
                         | ChoiceType::Labeled { .. }
                 ) {
-                    crate::game::layers::mark_layers_full(state);
+                    crate::game::layers::mark_layers_full_classed(
+                        state,
+                        FullEvalClass::ChosenMarker,
+                    );
                 }
             }
         }

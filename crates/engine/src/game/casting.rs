@@ -15,8 +15,8 @@ use crate::types::events::{ActivatedAbilityKind, GameEvent};
 use crate::types::game_state::{
     ActivationResidual, ActivationTargetSelection, CastOfferKind, CastPaymentMode,
     CastingPermissionIndex, CastingVariant, CastingVariantChoiceOption, ConvokeMode, CostResume,
-    GameState, ManaAbilityCostParent, ManaAbilityResume, NextSpellModifier, PayCostKind,
-    PendingCast, PendingCostMoveResume, SneakPlacement, SpellCostSource, StackEntry,
+    FullEvalClass, GameState, ManaAbilityCostParent, ManaAbilityResume, NextSpellModifier,
+    PayCostKind, PendingCast, PendingCostMoveResume, SneakPlacement, SpellCostSource, StackEntry,
     StackEntryKind, TargetEffectDetail, TargetSelectionSlot, WaitingFor,
 };
 use crate::types::identifiers::{CardId, ObjectId, TrackedSetId};
@@ -8661,7 +8661,7 @@ pub fn revert_bestow_form(state: &mut GameState, object_id: ObjectId) {
     if let Some(obj) = state.objects.get_mut(&object_id) {
         if obj.bestow_form.is_some() {
             revert_bestow_aura_form(obj);
-            crate::game::layers::mark_layers_full(state);
+            crate::game::layers::mark_layers_full_classed(state, FullEvalClass::FormChange);
         }
     }
 }
@@ -14436,6 +14436,7 @@ pub(super) fn pay_mana_cost_from_pool_with_choices(
         })?;
     if !spent_units.is_empty() && mana_payment::has_unspent_mana_continuous_effects(state) {
         state.layers_dirty.mark_full();
+        state.layers_full_classes.insert(FullEvalClass::Other);
     }
 
     let life_amounts = life_payments
@@ -14973,6 +14974,7 @@ fn pay_non_cast_mana_cost(
         })?;
     if !spent_units.is_empty() && mana_payment::has_unspent_mana_continuous_effects(state) {
         state.layers_dirty.mark_full();
+        state.layers_full_classes.insert(FullEvalClass::Other);
     }
 
     let life_amounts = life_payments
@@ -15139,6 +15141,7 @@ fn auto_tap_and_pay_cost_excluding(
         })?;
     if !spent_units.is_empty() && mana_payment::has_unspent_mana_continuous_effects(state) {
         state.layers_dirty.mark_full();
+        state.layers_full_classes.insert(FullEvalClass::Other);
     }
 
     // CR 107.4f + CR 118.3b + CR 119.4 + CR 119.8: Each Phyrexian shard paid

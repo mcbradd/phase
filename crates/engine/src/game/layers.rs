@@ -20040,7 +20040,7 @@ mod tests {
 
         // Control clone: force a full escalation and flush.
         let mut control = state.clone();
-        mark_layers_full(&mut control);
+        mark_layers_full_classed(&mut control, FullEvalClass::TestSetup);
         flush_layers(&mut control);
 
         // Guarded path: run the guard on a life change with no life-reading static.

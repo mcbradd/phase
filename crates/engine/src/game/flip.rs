@@ -48,7 +48,7 @@ use crate::game::game_object::{BackFaceData, GameObject};
 use crate::types::ability::CopiableValues;
 use crate::types::card::LayoutKind;
 use crate::types::events::GameEvent;
-use crate::types::game_state::GameState;
+use crate::types::game_state::{FullEvalClass, GameState};
 use crate::types::identifiers::ObjectId;
 use crate::types::zones::Zone;
 
@@ -158,7 +158,7 @@ pub fn flip_permanent(
     obj.back_face = Some(normal_face);
     obj.flipped = true;
 
-    crate::game::layers::mark_layers_full(state);
+    crate::game::layers::mark_layers_full_classed(state, FullEvalClass::FormChange);
 
     events.push(GameEvent::Flipped { object_id });
 

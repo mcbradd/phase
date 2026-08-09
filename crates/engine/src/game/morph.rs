@@ -3,7 +3,7 @@ use crate::types::ability::{
 };
 use crate::types::card_type::{CardType, CoreType};
 use crate::types::events::GameEvent;
-use crate::types::game_state::GameState;
+use crate::types::game_state::{FullEvalClass, GameState};
 use crate::types::identifiers::ObjectId;
 use crate::types::keywords::Keyword;
 use crate::types::mana::ManaCost;
@@ -361,7 +361,7 @@ pub fn turn_face_up(
     // (which does not touch `timestamp`) cannot clobber the new stamp.
     obj.timestamp = ts;
 
-    crate::game::layers::mark_layers_full(state);
+    crate::game::layers::mark_layers_full_classed(state, FullEvalClass::FormChange);
 
     // CR 614.1e + CR 708.11: now that the permanent is face up
     // (carrying its real abilities), apply any "As ~ is turned face up, [effect]"

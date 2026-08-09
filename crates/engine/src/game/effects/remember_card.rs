@@ -2,7 +2,7 @@ use crate::game::filter::{matches_target_filter, FilterContext};
 use crate::game::targeting::resolve_tracked_set_sentinel;
 use crate::types::ability::{ChosenAttribute, Effect, EffectError, ResolvedAbility};
 use crate::types::events::GameEvent;
-use crate::types::game_state::GameState;
+use crate::types::game_state::{FullEvalClass, GameState};
 use crate::types::identifiers::ObjectId;
 
 /// CR 608.2c + CR 613.1f: `Effect::RememberCard` — record the card chosen by a
@@ -60,6 +60,6 @@ pub fn resolve(
     // CR 613.1f: the companion static grant reads `ChosenAttribute::Card` at layer
     // evaluation, which may have already run this turn — re-run so the grant takes
     // effect immediately.
-    crate::game::layers::mark_layers_full(state);
+    crate::game::layers::mark_layers_full_classed(state, FullEvalClass::TrackedSet);
     Ok(())
 }

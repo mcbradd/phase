@@ -1,7 +1,7 @@
 use crate::types::ability::{EffectError, EffectKind, ResolvedAbility};
 use crate::types::card_type::CoreType;
 use crate::types::events::GameEvent;
-use crate::types::game_state::{GameState, WaitingFor};
+use crate::types::game_state::{FullEvalClass, GameState, WaitingFor};
 use crate::types::identifiers::ObjectId;
 use crate::types::zones::Zone;
 
@@ -62,7 +62,7 @@ pub fn resolve(
     if candidates.len() == 1 {
         // Only one creature — auto-select as ring-bearer.
         state.ring_bearer.insert(controller, Some(candidates[0]));
-        crate::game::layers::mark_layers_full(state);
+        crate::game::layers::mark_layers_full_classed(state, FullEvalClass::ChosenMarker);
         return Ok(());
     }
 
@@ -111,7 +111,7 @@ pub(crate) fn clear_ring_bearer_if_object(state: &mut GameState, object_id: Obje
         }
     });
     if changed {
-        crate::game::layers::mark_layers_full(state);
+        crate::game::layers::mark_layers_full_classed(state, FullEvalClass::ChosenMarker);
     }
 }
 
@@ -132,7 +132,7 @@ pub(crate) fn normalize_ring_bearers(state: &mut GameState) -> bool {
     for player in stale {
         state.ring_bearer.remove(&player);
     }
-    crate::game::layers::mark_layers_full(state);
+    crate::game::layers::mark_layers_full_classed(state, FullEvalClass::ChosenMarker);
     true
 }
 

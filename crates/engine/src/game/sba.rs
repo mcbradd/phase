@@ -11,7 +11,7 @@ use crate::types::ability::{ControllerRef, TargetFilter, TypedFilter};
 use crate::types::card_type::{CoreType, Supertype};
 use crate::types::counter::CounterType;
 use crate::types::events::GameEvent;
-use crate::types::game_state::{GameState, WaitingFor};
+use crate::types::game_state::{FullEvalClass, GameState, WaitingFor};
 use crate::types::identifiers::ObjectId;
 use crate::types::player::PlayerId;
 use crate::types::proposed_event::ProposedEvent;
@@ -357,7 +357,7 @@ fn check_city_blessing(
 
     for player_id in players_to_bless {
         state.city_blessing.insert(player_id);
-        crate::game::layers::mark_layers_full(state);
+        crate::game::layers::mark_layers_full_classed(state, FullEvalClass::Sba);
         events.push(GameEvent::CityBlessingGained { player_id });
         *any_performed = true;
     }
@@ -2090,6 +2090,7 @@ fn check_counter_cancellation(
                 .insert(CounterType::Minus1Minus1, m1m1 - cancel);
             obj.counters.retain(|_, v| *v > 0);
             state.layers_dirty.mark_full(); // P/T affected via Layer 7d
+            state.layers_full_classes.insert(FullEvalClass::Counters);
             *any_performed = true;
         }
     }

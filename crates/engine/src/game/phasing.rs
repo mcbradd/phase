@@ -18,7 +18,7 @@ use crate::game::effects::remove_from_combat::remove_object_from_combat;
 use crate::game::game_object::{AttachTarget, PhaseOutCause, PhaseStatus};
 use crate::types::card_type::CoreType;
 use crate::types::events::GameEvent;
-use crate::types::game_state::GameState;
+use crate::types::game_state::{FullEvalClass, GameState};
 use crate::types::identifiers::ObjectId;
 use crate::types::player::{PlayerId, PlayerStatus};
 use crate::types::zones::Zone;
@@ -118,7 +118,7 @@ pub fn phase_out_object(
         // effects apply and which affected sets may include these permanents.
         // Mark dirty so the next SBA/public-state flush re-derives layers with
         // phased-out objects excluded.
-        crate::game::layers::mark_layers_full(state);
+        crate::game::layers::mark_layers_full_classed(state, FullEvalClass::Phasing);
     }
 
     phased
@@ -177,7 +177,7 @@ pub fn phase_in_object(
         // CR 613.1 + CR 702.26c: Phasing in changes which continuous effects
         // apply (aura sources re-enter the layer system). Mark dirty so the
         // next SBA/public-state flush re-derives affected permanents.
-        crate::game::layers::mark_layers_full(state);
+        crate::game::layers::mark_layers_full_classed(state, FullEvalClass::Phasing);
     }
 
     for &id in &phased {

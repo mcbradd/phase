@@ -1,7 +1,7 @@
 use crate::types::card_type::CoreType;
 use crate::types::events::GameEvent;
 use crate::types::game_state::{
-    GameState, ResolutionSourceRelatch, StackEntry, ZoneChangeCombatStatus,
+    FullEvalClass, GameState, ResolutionSourceRelatch, StackEntry, ZoneChangeCombatStatus,
 };
 use crate::types::identifiers::{CardId, ObjectId, ObjectIncarnationRef};
 use crate::types::player::PlayerId;
@@ -405,6 +405,7 @@ pub(crate) fn apply_zone_exit_cleanup(
         if !preserve_bestow_form && obj_mut.bestow_form.is_some() {
             super::casting::revert_bestow_aura_form(obj_mut);
             state.layers_dirty.mark_full();
+            state.layers_full_classes.insert(FullEvalClass::FormChange);
         }
 
         // CR 702.148a + CR 612: A cleave spell's text-changing effect functions
@@ -443,6 +444,7 @@ pub(crate) fn apply_zone_exit_cleanup(
         if !preserve_prototype_form && obj_mut.prototype_form.is_some() {
             super::casting::clear_prototype_form(obj_mut);
             state.layers_dirty.mark_full();
+            state.layers_full_classes.insert(FullEvalClass::FormChange);
         }
 
         // CR 400.7d + CR 702.150a: Compleated's Phyrexian life-payment count
@@ -486,7 +488,7 @@ pub(crate) fn apply_zone_exit_cleanup(
         // triggers still read attacking/blocking status (CR 603.10a).
         super::effects::remove_from_combat::remove_object_from_combat(state, object_id);
         super::pairing::break_pair(state, object_id);
-        crate::game::layers::mark_layers_full(state);
+        crate::game::layers::mark_layers_full_classed(state, FullEvalClass::BattlefieldExit);
         // CR 400.7 + CR 702.11b: The "has dealt damage since entering" sticky flag
         // belongs to the old object. ObjectId persists across this zone change, so
         // clear it on a battlefield exit (death/bounce/exile/flicker) — otherwise a
@@ -1264,6 +1266,28 @@ pub fn move_to_zone(
         || static_dependency_before
         || static_dependency_after
     {
+        // Telemetry only (no rules effect): this arm is a disjunction, so
+        // attribute every axis that independently justified the full pass
+        // rather than only the first one that matched. Overlaps are intended —
+        // Hand -> Battlefield is both an entry and hand churn.
+        if to == Zone::Battlefield && (from == Zone::Hand || from == Zone::Exile) {
+            state
+                .layers_full_classes
+                .insert(FullEvalClass::EntryHandExile);
+        }
+        if to == Zone::Hand || from == Zone::Hand {
+            state.layers_full_classes.insert(FullEvalClass::HandChurn);
+        }
+        if from == Zone::Battlefield {
+            state
+                .layers_full_classes
+                .insert(FullEvalClass::BattlefieldExit);
+        }
+        if static_dependency_before || static_dependency_after {
+            state
+                .layers_full_classes
+                .insert(FullEvalClass::ZoneStaticDependency);
+        }
         crate::game::layers::mark_layers_full(state);
     }
 
@@ -1358,7 +1382,7 @@ pub(crate) fn restore_after_rollback(
     // identical to it: some rollback transitions `move_to_zone` marks
     // nothing for today (e.g. Stack->Library) become `Full` here, which is
     // strictly safe, never a behavior change a test could observe as wrong.
-    crate::game::layers::mark_layers_full(state);
+    crate::game::layers::mark_layers_full_classed(state, FullEvalClass::Other);
 }
 
 /// CR 603.10a: Record that every member of `group` left the battlefield in the
@@ -1529,13 +1553,13 @@ fn sever_battlefield_attachment_graph_on_exit(
         if let Some(attacher) = state.objects.get_mut(&object_id) {
             attacher.attached_to = None;
         }
-        crate::game::layers::mark_layers_full(state);
+        crate::game::layers::mark_layers_full_classed(state, FullEvalClass::Attach);
     }
 
     if let Some(host) = state.objects.get_mut(&object_id) {
         if !host.attachments.is_empty() {
             host.attachments.clear();
-            crate::game::layers::mark_layers_full(state);
+            crate::game::layers::mark_layers_full_classed(state, FullEvalClass::Attach);
         }
     }
 }
@@ -2449,7 +2473,7 @@ mod tests {
         }
 
         // Baseline: empty graveyard → Cairn has no Flying; layers clean after eval.
-        crate::game::layers::mark_layers_full(&mut state);
+        crate::game::layers::mark_layers_full_classed(&mut state, FullEvalClass::TestSetup);
         crate::game::layers::evaluate_layers(&mut state);
         assert!(!state.objects[&cairn].has_keyword(&Keyword::Flying));
         assert!(!state.layers_dirty.is_dirty());
@@ -2501,7 +2525,7 @@ mod tests {
             o.base_card_types = o.card_types.clone();
         }
 
-        crate::game::layers::mark_layers_full(&mut state);
+        crate::game::layers::mark_layers_full_classed(&mut state, FullEvalClass::TestSetup);
         crate::game::layers::evaluate_layers(&mut state);
         assert!(!state.layers_dirty.is_dirty());
 
@@ -2565,7 +2589,7 @@ mod tests {
         }
 
         // Baseline: empty graveyard → count gate unsatisfied → no Trample.
-        crate::game::layers::mark_layers_full(&mut state);
+        crate::game::layers::mark_layers_full_classed(&mut state, FullEvalClass::TestSetup);
         crate::game::layers::evaluate_layers(&mut state);
         assert!(!state.objects[&source].has_keyword(&Keyword::Trample));
         assert!(!state.layers_dirty.is_dirty());

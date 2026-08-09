@@ -1,6 +1,6 @@
 use crate::types::ability::{Effect, EffectError, EffectKind, ResolvedAbility};
 use crate::types::events::GameEvent;
-use crate::types::game_state::GameState;
+use crate::types::game_state::{FullEvalClass, GameState};
 
 /// CR 716.2a: Set the class level on the source Class enchantment.
 /// Setting the new level happens as part of the level ability's resolution.
@@ -22,7 +22,7 @@ pub fn resolve(
             level,
         });
         // CR 716.2a: New abilities become active at the new level — recompute layers.
-        crate::game::layers::mark_layers_full(state);
+        crate::game::layers::mark_layers_full_classed(state, FullEvalClass::ChosenMarker);
     }
 
     events.push(GameEvent::EffectResolved {

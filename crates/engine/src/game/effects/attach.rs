@@ -7,7 +7,7 @@ use crate::types::ability::{
     TargetFilter, TargetRef, TypedFilter,
 };
 use crate::types::events::GameEvent;
-use crate::types::game_state::{GameState, WaitingFor};
+use crate::types::game_state::{FullEvalClass, GameState, WaitingFor};
 use crate::types::identifiers::{ObjectId, ObjectIncarnationRef};
 use crate::types::player::PlayerId;
 use crate::types::resolved_commands::{
@@ -610,7 +610,7 @@ pub fn attach_to(
         }
     }
 
-    crate::game::layers::mark_layers_full(state);
+    crate::game::layers::mark_layers_full_classed(state, FullEvalClass::Attach);
     crate::game::layers::flush_layers(state);
 
     // CR 733: journal the settled edit through its owning family. A same-host
@@ -1260,7 +1260,7 @@ pub fn attach_to_player(
         ts
     });
 
-    crate::game::layers::mark_layers_full(state);
+    crate::game::layers::mark_layers_full_classed(state, FullEvalClass::Attach);
     crate::game::layers::flush_layers(state);
 
     // CR 733: journal the settled edit through its owning family, on the same
@@ -1299,7 +1299,7 @@ pub(crate) fn unattach(state: &mut GameState, attachment_id: ObjectId) -> Option
     if let Some(attachment) = state.objects.get_mut(&attachment_id) {
         attachment.attached_to = None;
     }
-    crate::game::layers::mark_layers_full(state);
+    crate::game::layers::mark_layers_full_classed(state, FullEvalClass::Attach);
     crate::game::layers::flush_layers(state);
 
     // CR 733 + CR 701.3d: an unattach installs no host and, unlike an attach,
@@ -1375,7 +1375,7 @@ pub fn apply_resolved_attachment(
         }
     }
 
-    crate::game::layers::mark_layers_full(state);
+    crate::game::layers::mark_layers_full_classed(state, FullEvalClass::Attach);
     crate::game::layers::flush_layers(state);
     Ok(())
 }
@@ -2558,7 +2558,7 @@ mod tests {
         let obj = state.objects.get_mut(&id).unwrap();
         obj.power = Some(power);
         obj.toughness = Some(power.max(1));
-        crate::game::layers::mark_layers_full(state);
+        crate::game::layers::mark_layers_full_classed(state, FullEvalClass::TestSetup);
         id
     }
 
@@ -2640,7 +2640,7 @@ mod tests {
             .card_types
             .supertypes
             .push(crate::types::card_type::Supertype::Legendary);
-        crate::game::layers::mark_layers_full(&mut state);
+        crate::game::layers::mark_layers_full_classed(&mut state, FullEvalClass::TestSetup);
 
         assert!(!can_attach_to_object(&state, aura, nonlegendary));
         attach_to(&mut state, aura, nonlegendary);
@@ -2851,7 +2851,7 @@ mod tests {
     }
 
     fn evaluate_protection_layers(state: &mut GameState) {
-        crate::game::layers::mark_layers_full(state);
+        crate::game::layers::mark_layers_full_classed(state, FullEvalClass::TestSetup);
         crate::game::layers::evaluate_layers(state);
     }
 
