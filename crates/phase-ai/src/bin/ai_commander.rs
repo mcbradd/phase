@@ -669,6 +669,51 @@ fn play_one_game(context: &GameRunContext<'_>, seed: u64, difficulty: AiDifficul
         seen.sort_unstable();
         println!("PODLAB-TELEM {}", serde_json::json!({ "cards_seen": seen }));
     }
+    // pod-lab D3: per-mutation-class attribution for this game's full layer
+    // re-evaluations, emitted only when the opt-in `layers-attribution` feature
+    // is built (off by default, so default runs pay nothing and print nothing).
+    // Same `PODLAB-TELEM ` prefix contract as the line above: it does not begin
+    // with "Turn ", match `^--- GAME`, or contain "Winner: " / "Difficulty: " /
+    // "ABORT: hit " / "did NOT reach GameOver", so pod-lab's stdout scanners are
+    // untouched. Every class and reason is emitted including zeros, so a reader
+    // can distinguish "never fired" from "key absent".
+    #[cfg(feature = "layers-attribution")]
+    {
+        use engine::types::game_state::{EscalationReason, FullEvalClass};
+
+        let attr = engine::game::perf_counters::layers_attribution_snapshot();
+        let classes: serde_json::Map<String, serde_json::Value> = FullEvalClass::ALL
+            .iter()
+            .map(|c| {
+                let entry = serde_json::json!({
+                    "w": attr.class_windows[c.index()],
+                    "ns": attr.class_nanos[c.index()],
+                });
+                (c.name().to_string(), entry)
+            })
+            .collect();
+        let escalations: serde_json::Map<String, serde_json::Value> = EscalationReason::ALL
+            .iter()
+            .map(|r| {
+                let entry = serde_json::json!({
+                    "w": attr.escalation_windows[r.index()],
+                    "ns": attr.escalation_nanos[r.index()],
+                });
+                (r.name().to_string(), entry)
+            })
+            .collect();
+        println!(
+            "PODLAB-TELEM {}",
+            serde_json::json!({
+                "layers-attr": {
+                    "full_windows": attr.full_windows,
+                    "unattributed": attr.unattributed_windows,
+                    "classes": classes,
+                    "escalations": escalations,
+                }
+            })
+        );
+    }
     println!();
 
     let outcome = classify_run_outcome(aborted, &state.waiting_for);
