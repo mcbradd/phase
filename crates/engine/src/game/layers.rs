@@ -6148,6 +6148,8 @@ fn transient_duration_condition(tce: &TransientContinuousEffect) -> Option<&Stat
 /// [`any_active_static_condition_perturbed_by_entry`] in this module, six
 /// static-mode/protection queries in `static_abilities`, plus
 /// `casting::transient_granted_spell_keywords_for`,
+/// `casting::apply_static_activated_ability_cost_reduction`,
+/// `effects::attach::protection_blocks_attachment`,
 /// `turns::scan_step_end_mana_handlers` and
 /// `visibility::viewer_may_look_at_face_down`. All but the first evaluate with
 /// `evaluate_condition` rather than `source_condition_gate_passes` — the
@@ -6161,13 +6163,6 @@ fn transient_duration_condition(tce: &TransientContinuousEffect) -> Option<&Stat
 /// plus the `ability_rw` / `ability_scan` / `coverage` walkers. They ask what a
 /// duration reads, never whether it holds, and they stay variant-safe through
 /// `ability_scan`'s exhaustive matches rather than through this authority.
-///
-/// Gate-blind consumers are a tracked pre-existing gap, not an exemption:
-/// `casting::apply_static_activated_ability_cost_reduction` and
-/// `effects::attach::protection_blocks_attachment` apply a transient effect
-/// without consulting either gate, so a lapsed condition still reduces a cost
-/// or blocks an attachment. Routing them through here changes behavior and
-/// needs its own CR analysis and tests, so it is out of scope here.
 ///
 /// The grep that surfaces a new offender is `for tce in
 /// &state.transient_continuous_effects` — the iteration site, not

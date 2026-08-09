@@ -11888,6 +11888,109 @@ fn transient_activation_cost_reduction_hits_only_controlled_artifact_tokens() {
     );
 }
 
+/// CR 611.2b + CR 611.3a: a transient `ReduceAbilityCost` effect whose enabling
+/// condition has LAPSED must stop discounting while the effect is still
+/// present. Eager pruning never removes a condition-gated TCE (only durations
+/// expire), so `apply_static_activated_ability_cost_reduction` must walk the
+/// `transient_gate_conditions` authority itself — before this gate landed, a
+/// lapsed condition kept discounting forever. Also proves the gate re-opens
+/// when the condition holds again (CR 611.3a: applies at any given moment to
+/// whatever its text indicates).
+#[test]
+fn transient_activation_cost_reduction_respects_lapsed_condition_gate() {
+    let mut state = setup_game_at_main_phase();
+
+    let source = create_object(
+        &mut state,
+        CardId(810),
+        PlayerId(0),
+        "Conditional Reducer".to_string(),
+        Zone::Battlefield,
+    );
+    let controlled_token = make_artifact_with_generic_ability(
+        &mut state,
+        CardId(811),
+        PlayerId(0),
+        "Token A",
+        true,
+        2,
+    );
+
+    // Same install shape as the Dining Car pinning test above, plus a live
+    // enabling condition riding on the StaticDefinition: "as long as you have
+    // 30 or more life". P0 starts at 40 → the gate holds at install time.
+    let reduce_mode = StaticMode::ReduceAbilityCost {
+        mode: crate::types::statics::CostModifyMode::Reduce,
+        keyword: "activated".to_string(),
+        amount: 2,
+        minimum_mana: None,
+        dynamic_count: None,
+        exemption: crate::types::statics::ActivationExemption::None,
+        activator: None,
+    };
+    let source_filter = TargetFilter::Typed(TypedFilter {
+        type_filters: vec![TypeFilter::Artifact],
+        controller: Some(ControllerRef::You),
+        properties: vec![FilterProp::Token],
+    });
+    let condition = crate::types::ability::StaticCondition::QuantityComparison {
+        lhs: crate::types::ability::QuantityExpr::Ref {
+            qty: crate::types::ability::QuantityRef::LifeTotal {
+                player: crate::types::ability::PlayerScope::Controller,
+            },
+        },
+        comparator: crate::types::ability::Comparator::GE,
+        rhs: crate::types::ability::QuantityExpr::Fixed { value: 30 },
+    };
+    let effect = Effect::GenericEffect {
+        static_abilities: vec![StaticDefinition::new(reduce_mode.clone())
+            .affected(source_filter)
+            .condition(condition)
+            .modifications(vec![ContinuousModification::AddStaticMode {
+                mode: reduce_mode,
+            }])],
+        duration: Some(crate::types::ability::Duration::UntilEndOfTurn),
+        target: None,
+        end_cost: None,
+    };
+    let ability = crate::types::ability::ResolvedAbility::new(effect, vec![], source, PlayerId(0));
+    let mut events = Vec::new();
+    crate::game::effects::resolve_effect(&mut state, &ability, &mut events).unwrap();
+    assert_eq!(state.transient_continuous_effects.len(), 1);
+    assert!(
+        state.transient_continuous_effects[0].condition.is_some(),
+        "the StaticDefinition's enabling condition must ride onto the transient",
+    );
+
+    // Gate holds (life 40 ≥ 30): the {2} activation is reduced to {0}.
+    state.players[0].life = 40;
+    assert!(
+        can_activate_ability_now(&state, PlayerId(0), controlled_token, 0),
+        "condition holds → the {{2}} cost reduces to {{0}}, affordable with no mana",
+    );
+
+    // Gate lapses (life 10 < 30): the effect is STILL PRESENT but must stop
+    // applying — present-but-lapsed is exactly the state the gate walk exists
+    // for; no pruning path ever removes a condition-gated TCE.
+    state.players[0].life = 10;
+    assert_eq!(
+        state.transient_continuous_effects.len(),
+        1,
+        "the lapsed effect stays present; only its gate stops it applying",
+    );
+    assert!(
+        !can_activate_ability_now(&state, PlayerId(0), controlled_token, 0),
+        "condition lapsed → no discount → {{2}} is unaffordable with no mana",
+    );
+
+    // CR 611.3a: the gate re-opens when the condition holds again.
+    state.players[0].life = 35;
+    assert!(
+        can_activate_ability_now(&state, PlayerId(0), controlled_token, 0),
+        "condition holds again → the discount resumes",
+    );
+}
+
 #[test]
 fn activated_ability_cost_reduction_mana_exemption_skips_mana_abilities() {
     // CR 601.2f + CR 605.1a: A "cost {2} less to activate that aren't mana

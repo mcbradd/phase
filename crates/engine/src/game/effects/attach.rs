@@ -929,6 +929,16 @@ fn protection_blocks_attachment(
     // Transient continuous protection grants (e.g. Mother of Runes) — no
     // StaticDefinition rider today; treat as always-blocking when they match.
     for tce in &state.transient_continuous_effects {
+        // CR 611.2b + CR 611.3a: same gate walk as the routed TCE consumers
+        // (`transient_gate_conditions` is the authority) — a lapsed "for as
+        // long as" duration or enabling condition must stop blocking the
+        // attachment, and via the CR 704.5n/q SBA consumer it must stop
+        // stripping an already-attached Aura/Equipment.
+        if !crate::game::layers::transient_gate_conditions(tce).all(|condition| {
+            crate::game::layers::evaluate_condition(state, condition, tce.controller, tce.source_id)
+        }) {
+            continue;
+        }
         let ctx = FilterContext::from_source(state, tce.source_id);
         if !matches_target_filter(state, host_id, &tce.affected, &ctx) {
             continue;
@@ -1579,6 +1589,82 @@ mod tests {
             Some(AttachIllegality::Protection)
         );
         assert!(!can_attach_to_object(&state, aura, creature));
+    }
+
+    #[test]
+    fn attachment_illegality_transient_protection_respects_lapsed_condition_gate() {
+        // CR 611.2b + CR 611.3a: a transient protection grant (Mother of Runes
+        // class) whose enabling condition has LAPSED must stop blocking the
+        // attachment while the effect is still present — eager pruning never
+        // removes a condition-gated TCE, so `protection_blocks_attachment`
+        // walks the `transient_gate_conditions` authority itself. Blast radius
+        // of the pre-fix blind read: the CR 704.5n/q SBA consumer would keep
+        // stripping an already-attached Aura off a host whose grant had lapsed.
+        let mut state = setup();
+        let aura = spawn_with_subtype(&mut state, "Pacifism", "Aura");
+        {
+            let obj = state.objects.get_mut(&aura).unwrap();
+            obj.card_types.core_types.push(CoreType::Enchantment);
+            obj.color.push(crate::types::mana::ManaColor::White);
+        }
+        let creature = spawn_creature(&mut state, "Bear");
+        let granter = spawn_creature(&mut state, "Mother of Runes");
+
+        // "As long as you have 30 or more life, Bear has protection from
+        // white" — the gated transient the production install path would
+        // create; constructed through the single TCE authority.
+        let condition = crate::types::ability::StaticCondition::QuantityComparison {
+            lhs: crate::types::ability::QuantityExpr::Ref {
+                qty: crate::types::ability::QuantityRef::LifeTotal {
+                    player: crate::types::ability::PlayerScope::Controller,
+                },
+            },
+            comparator: crate::types::ability::Comparator::GE,
+            rhs: crate::types::ability::QuantityExpr::Fixed { value: 30 },
+        };
+        state.add_transient_continuous_effect(
+            granter,
+            PlayerId(0),
+            crate::types::ability::Duration::UntilEndOfTurn,
+            TargetFilter::SpecificObject { id: creature },
+            vec![ContinuousModification::AddKeyword {
+                keyword: crate::types::keywords::Keyword::Protection(
+                    crate::types::keywords::ProtectionTarget::Color(
+                        crate::types::mana::ManaColor::White,
+                    ),
+                ),
+            }],
+            Some(condition),
+        );
+
+        // Pin the premise rather than assuming the fixture's starting total.
+        state.players[0].life = 40;
+        assert_eq!(
+            attachment_illegality(&state, aura, creature),
+            Some(AttachIllegality::Protection),
+            "condition holds → the transient protection blocks the white Aura",
+        );
+
+        // Gate lapses: the effect is STILL PRESENT but must stop blocking.
+        state.players[0].life = 10;
+        assert_eq!(
+            state.transient_continuous_effects.len(),
+            1,
+            "the lapsed effect stays present; only its gate stops it applying",
+        );
+        assert_eq!(
+            attachment_illegality(&state, aura, creature),
+            None,
+            "condition lapsed → the protection grant no longer blocks the Aura",
+        );
+
+        // CR 611.3a: the gate re-opens when the condition holds again.
+        state.players[0].life = 30;
+        assert_eq!(
+            attachment_illegality(&state, aura, creature),
+            Some(AttachIllegality::Protection),
+            "condition holds again → the block resumes",
+        );
     }
 
     #[test]

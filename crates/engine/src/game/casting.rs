@@ -20053,6 +20053,17 @@ fn apply_static_activated_ability_cost_reduction(
     // the affected set is dynamic (re-evaluated each activation), so a token
     // created later this turn is still discounted.
     for tce in &state.transient_continuous_effects {
+        // CR 611.2b + CR 611.3a: the gates on a resolution-created effect must
+        // hold for it to apply; `transient_gate_conditions` is the authority
+        // over which they are, shared with the routed static-mode TCE queries
+        // in `static_abilities.rs` and `visibility.rs`. Without this walk a
+        // lapsed "for as long as" duration or enabling condition would keep
+        // discounting.
+        if !super::layers::transient_gate_conditions(tce).all(|condition| {
+            super::layers::evaluate_condition(state, condition, tce.controller, tce.source_id)
+        }) {
+            continue;
+        }
         for modification in &tce.modifications {
             let ContinuousModification::AddStaticMode {
                 mode: reduce_mode @ StaticMode::ReduceAbilityCost { .. },
