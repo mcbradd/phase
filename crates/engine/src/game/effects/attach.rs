@@ -1504,8 +1504,8 @@ mod tests {
     use super::*;
     use crate::game::zones::create_object;
     use crate::types::ability::{
-        AttachmentKind, ControllerRef, FilterProp, StaticDefinition, TargetFilter, TargetRef,
-        TypedFilter,
+        AttachmentKind, ContinuousModification, ControllerRef, FilterProp, StaticDefinition,
+        TargetFilter, TargetRef, TypedFilter,
     };
     use crate::types::card_type::CoreType;
     use crate::types::game_state::{AttachmentSnapshot, ZoneChangeRecord};

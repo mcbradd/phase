@@ -11942,24 +11942,25 @@ fn transient_activation_cost_reduction_respects_lapsed_condition_gate() {
         comparator: crate::types::ability::Comparator::GE,
         rhs: crate::types::ability::QuantityExpr::Fixed { value: 30 },
     };
-    let effect = Effect::GenericEffect {
-        static_abilities: vec![StaticDefinition::new(reduce_mode.clone())
-            .affected(source_filter)
-            .condition(condition)
-            .modifications(vec![ContinuousModification::AddStaticMode {
-                mode: reduce_mode,
-            }])],
-        duration: Some(crate::types::ability::Duration::UntilEndOfTurn),
-        target: None,
-        end_cost: None,
-    };
-    let ability = crate::types::ability::ResolvedAbility::new(effect, vec![], source, PlayerId(0));
-    let mut events = Vec::new();
-    crate::game::effects::resolve_effect(&mut state, &ability, &mut events).unwrap();
+    // Installed through the single TCE authority directly (not via
+    // `Effect::GenericEffect` + `resolve_effect`): that resolution path
+    // evaluates a `StaticDefinition.condition` ONCE at resolution time (CR
+    // 611.2d, the Odric-style intervening-if shape) and strips it before
+    // registering, so it never rides onto the transient. This test needs
+    // the CR 611.3a continuously-live gate instead, which is what
+    // `apply_static_activated_ability_cost_reduction` walks.
+    state.add_transient_continuous_effect(
+        source,
+        PlayerId(0),
+        crate::types::ability::Duration::UntilEndOfTurn,
+        source_filter,
+        vec![ContinuousModification::AddStaticMode { mode: reduce_mode }],
+        Some(condition),
+    );
     assert_eq!(state.transient_continuous_effects.len(), 1);
     assert!(
         state.transient_continuous_effects[0].condition.is_some(),
-        "the StaticDefinition's enabling condition must ride onto the transient",
+        "the enabling condition must ride onto the transient",
     );
 
     // Gate holds (life 40 ≥ 30): the {2} activation is reduced to {0}.
