@@ -1,5 +1,9 @@
 use std::cell::Cell;
 
+#[cfg(any(test, feature = "layers-attribution"))]
+use crate::types::game_state::FullEvalClass;
+use crate::types::game_state::{EscalationReason, FullEvalClassSet};
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PerfCounterSnapshot {
     pub state_clone_for_legality: u64,
@@ -366,4 +370,132 @@ pub fn snapshot() -> PerfCounterSnapshot {
 
 pub fn reset() {
     COUNTERS.with(|c| c.set(PerfCounterSnapshot::default()));
+    #[cfg(any(test, feature = "layers-attribution"))]
+    layers_attribution_reset();
+}
+
+// ---------------------------------------------------------------------------
+// Full-layer-eval attribution (feature `layers-attribution`)
+//
+// Deliberately NOT part of `PerfCounterSnapshot`: that struct is serialized by
+// `phase-ai`'s `PerfCounters::from_snapshot` under `PERF_SCHEMA_VERSION`, and
+// adding fields there would invalidate the `ai-perf-gate` baseline. This is a
+// separate, feature-gated readout with its own accessor.
+// ---------------------------------------------------------------------------
+
+/// Per-class / per-escalation-reason attribution of full layer re-evaluations.
+///
+/// `class_windows[c]` counts flush windows in which class `c` was among the
+/// marks — NOT a partition of `full_windows`, since one window can carry several
+/// classes. `class_nanos[c]` likewise attributes the WHOLE window's
+/// `evaluate_layers` time to every class present, so a multi-class window is
+/// double-counted by design (the question it answers is "how much full-eval time
+/// is this class implicated in", not "how much did it cause").
+#[cfg(any(test, feature = "layers-attribution"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LayersAttribution {
+    /// `LayersDirty::Full` flush windows (escalations are counted separately).
+    pub full_windows: u64,
+    /// Full windows whose class set was empty — i.e. some site still calls
+    /// `LayersDirty::mark_full` directly. The conversion-coverage signal.
+    pub unattributed_windows: u64,
+    pub class_windows: [u64; FullEvalClass::COUNT],
+    pub class_nanos: [u64; FullEvalClass::COUNT],
+    pub escalation_windows: [u64; EscalationReason::COUNT],
+    pub escalation_nanos: [u64; EscalationReason::COUNT],
+}
+
+#[cfg(any(test, feature = "layers-attribution"))]
+impl Default for LayersAttribution {
+    fn default() -> Self {
+        Self {
+            full_windows: 0,
+            unattributed_windows: 0,
+            class_windows: [0; FullEvalClass::COUNT],
+            class_nanos: [0; FullEvalClass::COUNT],
+            escalation_windows: [0; EscalationReason::COUNT],
+            escalation_nanos: [0; EscalationReason::COUNT],
+        }
+    }
+}
+
+#[cfg(any(test, feature = "layers-attribution"))]
+thread_local! {
+    /// Per-thread for the same reason as `COUNTERS` above.
+    static LAYERS_ATTRIBUTION: std::cell::RefCell<LayersAttribution> =
+        std::cell::RefCell::new(LayersAttribution::default());
+}
+
+/// Wall-clock span of one `evaluate_layers` call. A ZST when the feature is off,
+/// so the flush code needs no `#[cfg]` of its own.
+#[cfg(any(test, feature = "layers-attribution"))]
+pub struct LayersFlushTimer(web_time::Instant);
+
+#[cfg(not(any(test, feature = "layers-attribution")))]
+pub struct LayersFlushTimer;
+
+#[cfg(any(test, feature = "layers-attribution"))]
+impl LayersFlushTimer {
+    pub fn start() -> Self {
+        Self(web_time::Instant::now())
+    }
+
+    fn elapsed_nanos(&self) -> u64 {
+        u64::try_from(self.0.elapsed().as_nanos()).unwrap_or(u64::MAX)
+    }
+}
+
+#[cfg(not(any(test, feature = "layers-attribution")))]
+impl LayersFlushTimer {
+    #[inline]
+    pub fn start() -> Self {
+        Self
+    }
+}
+
+/// Record one completed `LayersDirty::Full` flush window and the classes that
+/// marked it.
+#[cfg(any(test, feature = "layers-attribution"))]
+pub fn record_layers_full_attribution(timer: LayersFlushTimer, classes: FullEvalClassSet) {
+    let nanos = timer.elapsed_nanos();
+    LAYERS_ATTRIBUTION.with(|a| {
+        let mut a = a.borrow_mut();
+        a.full_windows += 1;
+        if classes.is_empty() {
+            a.unattributed_windows += 1;
+        }
+        for class in classes.iter() {
+            a.class_windows[class.index()] += 1;
+            a.class_nanos[class.index()] += nanos;
+        }
+    });
+}
+
+#[cfg(not(any(test, feature = "layers-attribution")))]
+#[inline]
+pub fn record_layers_full_attribution(_timer: LayersFlushTimer, _classes: FullEvalClassSet) {}
+
+/// Record one `EnteredObjects` window that had to escalate to a full pass.
+#[cfg(any(test, feature = "layers-attribution"))]
+pub fn record_layers_escalation_attribution(timer: LayersFlushTimer, reason: EscalationReason) {
+    let nanos = timer.elapsed_nanos();
+    LAYERS_ATTRIBUTION.with(|a| {
+        let mut a = a.borrow_mut();
+        a.escalation_windows[reason.index()] += 1;
+        a.escalation_nanos[reason.index()] += nanos;
+    });
+}
+
+#[cfg(not(any(test, feature = "layers-attribution")))]
+#[inline]
+pub fn record_layers_escalation_attribution(_timer: LayersFlushTimer, _reason: EscalationReason) {}
+
+#[cfg(any(test, feature = "layers-attribution"))]
+pub fn layers_attribution_snapshot() -> LayersAttribution {
+    LAYERS_ATTRIBUTION.with(|a| *a.borrow())
+}
+
+#[cfg(any(test, feature = "layers-attribution"))]
+pub fn layers_attribution_reset() {
+    LAYERS_ATTRIBUTION.with(|a| *a.borrow_mut() = LayersAttribution::default());
 }

@@ -18,6 +18,10 @@ forge = []
 proptest = ["dep:proptest"]
 # Exposes raw zone placement for test crates; never enabled by production consumers.
 test-support = []
+# Accumulates per-mutation-class attribution for every full layer re-evaluation
+# (`game::perf_counters::layers_attribution_snapshot`). Telemetry only — it adds
+# no rules semantics and is never enabled by production consumers.
+layers-attribution = []
 # Generates only the self-contained interaction DTO contract. Production
 # consumers do not enable this feature and continue to use the existing action
 # transport until the explicit adapter cutover.
@@ -110,7 +114,10 @@ serde_json = "1"
 
 [dev-dependencies]
 flate2 = "1"
-engine = { path = ".", package = "phase-engine", features = ["test-support"] }
+engine = { path = ".", package = "phase-engine", features = [
+    "test-support",
+    "layers-attribution",
+] }
 tempfile = "3"
 insta = { version = "1", features = ["json"] }
 assert_matches = "1.5"
