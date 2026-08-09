@@ -7064,19 +7064,31 @@ pub enum EscalationReason {
     RecipientSourcedEffect,
     /// A live effect's population-sensitive value forces a board-wide redraw.
     PopulationForced,
+    /// A live modification reaching an entrant writes a characteristic kind that
+    /// some live read depends on, so the pre-layer population probe cannot see
+    /// the entrant's post-layer characteristics (CR 613.6: an effect keeps
+    /// applying to the set it first applied to, so reads settle before the
+    /// writes this probe would need).
+    EntrantCharacteristicRewrite,
     /// The entry perturbed a pre-existing static's source-level enabling
     /// condition (CR 611.3a).
     ConditionPerturbed,
+    /// A live copy effect (CR 707.2) that can reach an incremental recipient
+    /// grants a continuous static ability, so the recipient's own static
+    /// definitions are not knowable before the copy layer resolves.
+    CopyGrantsStatic,
 }
 
 impl EscalationReason {
     /// Every variant, ordered by [`Self::index`].
-    pub const ALL: [EscalationReason; 5] = [
+    pub const ALL: [EscalationReason; 7] = [
         Self::EnteredMissing,
         Self::EnteredBlocksIncremental,
         Self::RecipientSourcedEffect,
         Self::PopulationForced,
+        Self::EntrantCharacteristicRewrite,
         Self::ConditionPerturbed,
+        Self::CopyGrantsStatic,
     ];
 
     pub const COUNT: usize = Self::ALL.len();
@@ -7089,7 +7101,9 @@ impl EscalationReason {
             Self::EnteredBlocksIncremental => 1,
             Self::RecipientSourcedEffect => 2,
             Self::PopulationForced => 3,
-            Self::ConditionPerturbed => 4,
+            Self::EntrantCharacteristicRewrite => 4,
+            Self::ConditionPerturbed => 5,
+            Self::CopyGrantsStatic => 6,
         }
     }
 
@@ -7100,7 +7114,9 @@ impl EscalationReason {
             Self::EnteredBlocksIncremental => "EnteredBlocksIncremental",
             Self::RecipientSourcedEffect => "RecipientSourcedEffect",
             Self::PopulationForced => "PopulationForced",
+            Self::EntrantCharacteristicRewrite => "EntrantCharacteristicRewrite",
             Self::ConditionPerturbed => "ConditionPerturbed",
+            Self::CopyGrantsStatic => "CopyGrantsStatic",
         }
     }
 }
