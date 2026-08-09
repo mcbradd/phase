@@ -35,7 +35,8 @@ use crate::types::card_type::{
 };
 use crate::types::counter::{has_positive_counters, CounterType};
 use crate::types::game_state::{
-    DayNight, GameState, LayersDirty, StaticGateKey, TransientContinuousEffect,
+    DayNight, EscalationReason, FullEvalClass, GameState, LayersDirty, StaticGateKey,
+    TransientContinuousEffect,
 };
 use crate::types::identifiers::{ObjectId, ObjectIncarnationRef};
 use crate::types::keywords::Keyword;
@@ -155,7 +156,7 @@ pub fn prune_end_of_turn_effects(state: &mut GameState) {
         .transient_continuous_effects
         .retain(|e| e.duration != Duration::UntilEndOfTurn);
     if state.transient_continuous_effects.len() != before {
-        state.layers_dirty.mark_full();
+        mark_layers_full_classed(state, FullEvalClass::TransientEffect);
     }
 }
 
@@ -167,7 +168,7 @@ pub fn prune_end_of_combat_effects(state: &mut GameState) {
         .transient_continuous_effects
         .retain(|e| e.duration != Duration::UntilEndOfCombat);
     if state.transient_continuous_effects.len() != before {
-        state.layers_dirty.mark_full();
+        mark_layers_full_classed(state, FullEvalClass::TransientEffect);
     }
 }
 
@@ -204,7 +205,7 @@ pub fn prune_controller_end_combat_step_effects(state: &mut GameState, active_pl
         }
     });
     if state.transient_continuous_effects.len() != before {
-        state.layers_dirty.mark_full();
+        mark_layers_full_classed(state, FullEvalClass::TransientEffect);
     }
 }
 
@@ -239,7 +240,7 @@ pub fn prune_until_next_end_step_effects(state: &mut GameState, active_player: P
         !(controller_scoped || turn_agnostic)
     });
     if state.transient_continuous_effects.len() != before {
-        state.layers_dirty.mark_full();
+        mark_layers_full_classed(state, FullEvalClass::TransientEffect);
     }
 }
 
@@ -283,7 +284,7 @@ pub fn prune_until_next_upkeep_effects(state: &mut GameState, active_player: Pla
         !(controller_scoped || turn_agnostic)
     });
     if state.transient_continuous_effects.len() != before {
-        state.layers_dirty.mark_full();
+        mark_layers_full_classed(state, FullEvalClass::TransientEffect);
     }
 }
 
@@ -676,7 +677,7 @@ pub fn prune_until_next_turn_effects(state: &mut GameState, active_player: Playe
         ) && e.controller == active_player)
     });
     if state.transient_continuous_effects.len() != before {
-        state.layers_dirty.mark_full();
+        mark_layers_full_classed(state, FullEvalClass::TransientEffect);
     }
 
     // CR 701.15a: Goad expires at the goading player's next turn. Clear goaded_by entries
@@ -738,7 +739,7 @@ pub fn prune_controller_untap_step_effects(state: &mut GameState, active_player:
         }
     });
     if state.transient_continuous_effects.len() != before {
-        state.layers_dirty.mark_full();
+        mark_layers_full_classed(state, FullEvalClass::TransientEffect);
     }
 }
 
@@ -750,7 +751,7 @@ pub fn prune_host_left_effects(state: &mut GameState, departed_id: ObjectId) {
         .transient_continuous_effects
         .retain(|e| !(e.duration == Duration::UntilHostLeavesPlay && e.source_id == departed_id));
     if state.transient_continuous_effects.len() != before {
-        state.layers_dirty.mark_full();
+        mark_layers_full_classed(state, FullEvalClass::TransientEffect);
     }
 }
 
@@ -761,7 +762,7 @@ pub fn prune_affected_object_left_effects(state: &mut GameState, departed_id: Ob
         !matches!(effect.affected, TargetFilter::SpecificObject { id } if id == departed_id)
     });
     if state.transient_continuous_effects.len() != before {
-        state.layers_dirty.mark_full();
+        mark_layers_full_classed(state, FullEvalClass::TransientEffect);
     }
 }
 
@@ -885,7 +886,7 @@ pub(crate) fn prune_controller_controls_source_on_leave(
         }
     }
     if changed {
-        state.layers_dirty.mark_full();
+        mark_layers_full_classed(state, FullEvalClass::TransientEffect);
     }
 }
 
@@ -2690,7 +2691,7 @@ pub(crate) fn any_active_static_reads_top_of_library(state: &GameState) -> bool 
 /// move and shuffle helper so a stale layer cache can't survive the change.
 pub(crate) fn mark_layers_full_if_top_of_library_static_live(state: &mut GameState) {
     if any_active_static_reads_top_of_library(state) {
-        mark_layers_full(state);
+        mark_layers_full_classed(state, FullEvalClass::LibraryTop);
     }
 }
 
@@ -3292,7 +3293,7 @@ fn any_active_static_reads_life_total(state: &GameState) -> bool {
 /// so a stale layer cache can't survive a life change that flips a derived board.
 pub(crate) fn mark_layers_full_if_life_reading_static_live(state: &mut GameState) {
     if any_active_static_reads_life_total(state) {
-        mark_layers_full(state);
+        mark_layers_full_classed(state, FullEvalClass::LifeTotal);
     }
 }
 
@@ -3311,8 +3312,21 @@ pub(crate) fn static_layer_dependency_for_zone_transition(
 
 /// Mark the layer system as requiring a FULL battlefield re-evaluation. The
 /// conservative escalation used by every mutation other than a battlefield entry.
+///
+/// Prefer [`mark_layers_full_classed`] at any converted call site: an unclassed
+/// mark still escalates correctly (CR 613.1 — a full pass is always right) but
+/// lands in the telemetry "unattributed" bucket.
 pub fn mark_layers_full(state: &mut GameState) {
     state.layers_dirty.mark_full();
+}
+
+/// [`mark_layers_full`] plus telemetry attribution: record WHICH mutation
+/// category asked for the full pass. Semantically identical to
+/// `mark_layers_full` — `class` never affects a rules decision, only the
+/// `layers-attribution` readout.
+pub fn mark_layers_full_classed(state: &mut GameState, class: FullEvalClass) {
+    state.layers_dirty.mark_full();
+    state.layers_full_classes.insert(class);
 }
 
 /// Record that `id` entered the battlefield and is a candidate for incremental
@@ -3331,35 +3345,45 @@ pub fn mark_layers_entered(state: &mut GameState, id: ObjectId) {
 /// per-entered precondition scan AND a board-wide escalation scan prove that
 /// re-deriving just the entered objects yields a board identical to a full pass.
 pub fn flush_layers(state: &mut GameState) {
+    // Drained unconditionally: a stray class mark on a `Clean`/`EnteredObjects`
+    // window must not leak into the NEXT full window's attribution.
+    let classes = std::mem::take(&mut state.layers_full_classes);
     match std::mem::replace(&mut state.layers_dirty, LayersDirty::Clean) {
         LayersDirty::Clean => {}
         LayersDirty::Full => {
             super::perf_counters::record_layers_full_eval();
+            let timer = super::perf_counters::LayersFlushTimer::start();
             evaluate_layers(state);
+            super::perf_counters::record_layers_full_attribution(timer, classes);
             super::public_state::mark_public_state_all_dirty(state);
         }
         LayersDirty::EnteredObjects(ids) => {
             if ids.is_empty() {
                 return;
             }
-            if let Some(prepared) = prepare_incremental_flush(state, &ids) {
-                super::perf_counters::record_layers_incremental();
-                apply_layers_incremental(state, prepared);
-                // Rebuild the presence index so the incremental arm leaves a PRECISE index
-                // (not a conservative superset). The incremental path is already
-                // O(battlefield): `prepare_incremental_flush` unconditionally calls
-                // `StaticSourceIndex::rebuild_from_state`, so a full presence rebuild here is
-                // DRY, matches the sibling-cache convention, and adds no asymptotic cost.
-                refresh_static_mode_presence(state);
-                for id in &ids {
-                    super::public_state::mark_public_state_object_dirty(state, *id);
+            match prepare_incremental_flush(state, &ids) {
+                Ok(prepared) => {
+                    super::perf_counters::record_layers_incremental();
+                    apply_layers_incremental(state, prepared);
+                    // Rebuild the presence index so the incremental arm leaves a PRECISE index
+                    // (not a conservative superset). The incremental path is already
+                    // O(battlefield): `prepare_incremental_flush` unconditionally calls
+                    // `StaticSourceIndex::rebuild_from_state`, so a full presence rebuild here is
+                    // DRY, matches the sibling-cache convention, and adds no asymptotic cost.
+                    refresh_static_mode_presence(state);
+                    for id in &ids {
+                        super::public_state::mark_public_state_object_dirty(state, *id);
+                    }
+                    super::public_state::mark_battlefield_display_dirty(state);
                 }
-                super::public_state::mark_battlefield_display_dirty(state);
-            } else {
-                super::perf_counters::record_layers_escalated();
-                super::perf_counters::record_layers_full_eval();
-                evaluate_layers(state);
-                super::public_state::mark_public_state_all_dirty(state);
+                Err(reason) => {
+                    super::perf_counters::record_layers_escalated();
+                    super::perf_counters::record_layers_full_eval();
+                    let timer = super::perf_counters::LayersFlushTimer::start();
+                    evaluate_layers(state);
+                    super::perf_counters::record_layers_escalation_attribution(timer, reason);
+                    super::public_state::mark_public_state_all_dirty(state);
+                }
             }
         }
     }
@@ -3368,11 +3392,14 @@ pub fn flush_layers(state: &mut GameState) {
 fn prepare_incremental_flush(
     state: &mut GameState,
     entered_ids: &BTreeSet<ObjectId>,
-) -> Option<PreparedIncrementalFlush> {
+) -> Result<PreparedIncrementalFlush, EscalationReason> {
     for &id in entered_ids {
-        let obj = state.objects.get(&id)?;
+        let obj = state
+            .objects
+            .get(&id)
+            .ok_or(EscalationReason::EnteredMissing)?;
         if entered_object_blocks_incremental(state, obj) {
-            return None;
+            return Err(EscalationReason::EnteredBlocksIncremental);
         }
     }
 
@@ -3400,15 +3427,19 @@ fn prepare_incremental_flush(
         recipient_ids.contains(&effect.source_id)
             && !effect_is_restricted_to_incremental_recipients(effect, &recipient_ids)
     }) {
-        return None;
+        return Err(EscalationReason::RecipientSourcedEffect);
     }
-    if active_effects_force_incremental_escalation(state, entered_ids, &active_effects)
-        || any_active_static_condition_perturbed_by_entry(state, entered_ids)
-    {
-        return None;
+    // Split from a single `||` purely to attribute WHICH check escalated;
+    // evaluation order (population-forced BEFORE condition-perturbed) and the
+    // short-circuit are preserved exactly.
+    if active_effects_force_incremental_escalation(state, entered_ids, &active_effects) {
+        return Err(EscalationReason::PopulationForced);
+    }
+    if any_active_static_condition_perturbed_by_entry(state, entered_ids) {
+        return Err(EscalationReason::ConditionPerturbed);
     }
 
-    Some(PreparedIncrementalFlush {
+    Ok(PreparedIncrementalFlush {
         recipient_ids,
         active_effects,
     })
