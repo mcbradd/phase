@@ -227,10 +227,14 @@ fn parse_cli(args: &[String], measurement_env: bool) -> Result<CliArgs, String> 
                 }
             },
             "--watch-card" => match args_iter.next() {
-                Some(v) if !v.trim().is_empty() && !v.starts_with("--") => {
-                    exact_watch_cards.insert(v.trim().to_string());
+                Some(v) => {
+                    let name = v.trim();
+                    if name.is_empty() || name.starts_with("--") {
+                        return Err("error: --watch-card requires an exact card name".to_string());
+                    }
+                    exact_watch_cards.insert(name.to_string());
                 }
-                _ => return Err("error: --watch-card requires an exact card name".to_string()),
+                None => return Err("error: --watch-card requires an exact card name".to_string()),
             },
             other => {
                 // `--difficulty-p0` .. `--difficulty-p3`: single-seat override,
@@ -1840,7 +1844,7 @@ mod tests {
 
     #[test]
     fn parse_cli_watch_card_rejects_missing_or_blank_name() {
-        for value in [None, Some(""), Some("  "), Some("--seed")] {
+        for value in [None, Some(""), Some("  "), Some("--seed"), Some(" --seed")] {
             let mut args = vec!["ai-commander".to_string(), "--watch-card".to_string()];
             args.extend(value.map(str::to_string));
             assert!(matches!(
