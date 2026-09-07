@@ -32,7 +32,8 @@
 //!
 //! Optional engagement telemetry: repeat `--watch-card "Exact Name, With Comma"`
 //! for exact, case-sensitive names. Legacy `--watch-cards "Name One,Name Two"`
-//! still splits on commas. The last legacy list plus all exact names are watched.
+//! still splits on commas. Both options trim surrounding whitespace. The last
+//! legacy list plus all exact names are watched.
 //! `PODLAB-TELEM` retains the sorted global draw/cast union `cards_seen` and adds
 //! `card_counts`: rows sorted by numeric `seat`, then `name`, with numeric `draws`
 //! and `casts`. Only observed, name-resolved draw/cast events produce rows; these
@@ -45,7 +46,7 @@
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use std::any::Any;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::Write as _;
 use std::panic::PanicHookInfo;
 use std::path::PathBuf;
@@ -227,7 +228,7 @@ fn parse_cli(args: &[String], measurement_env: bool) -> Result<CliArgs, String> 
             },
             "--watch-card" => match args_iter.next() {
                 Some(v) if !v.trim().is_empty() && !v.starts_with("--") => {
-                    exact_watch_cards.insert(v.clone());
+                    exact_watch_cards.insert(v.trim().to_string());
                 }
                 _ => return Err("error: --watch-card requires an exact card name".to_string()),
             },
@@ -789,7 +790,6 @@ fn play_one_game(context: &GameRunContext<'_>, seed: u64, difficulty: AiDifficul
 
 #[derive(Default)]
 struct WatchedCards {
-    seen: HashSet<String>,
     counts: BTreeMap<(PlayerId, String), WatchedCardCounts>,
 }
 
@@ -809,8 +809,7 @@ struct WatchedCardCountRow<'a> {
 
 impl WatchedCards {
     fn to_json(&self) -> serde_json::Value {
-        let mut seen: Vec<&str> = self.seen.iter().map(String::as_str).collect();
-        seen.sort_unstable();
+        let seen: BTreeSet<&str> = self.counts.keys().map(|(_, name)| name.as_str()).collect();
         let card_counts: Vec<_> = self
             .counts
             .iter()
@@ -828,8 +827,8 @@ impl WatchedCards {
 /// pod-lab swap-liveness telemetry (loop-3 Q3(b)): scans one driver-loop
 /// batch's `AiActionResult`s for `SpellCast`/`CardDrawn` events naming an
 /// object whose CURRENT name (resolved via that action's own `r.state`, not
-/// a stale/outer snapshot) is in `watch`, inserting the resolved name into
-/// the legacy union and counting each event by its own player field, never
+/// a stale/outer snapshot) is in `watch`, counting each event by its own
+/// player field and deriving the legacy union from those counts, never
 /// the object's owner/current controller or the AI actor. Matches on name,
 /// not `CardId`: `CardId` is assigned per
 /// physical-card-object at deck load (`deck_loading.rs`), not a stable
@@ -861,7 +860,6 @@ fn record_watched_cards(
             };
             if let Some(obj) = r.state.objects.get(&object_id) {
                 if watch.contains(&obj.name) {
-                    watched.seen.insert(obj.name.clone());
                     let counts = watched.counts.entry((seat, obj.name.clone())).or_default();
                     counts.draws += draws;
                     counts.casts += casts;
@@ -1423,12 +1421,6 @@ mod tests {
         record_watched_cards(&results, &watch, &mut watched);
 
         assert_eq!(
-            watched.seen,
-            ["Lightning Bolt".to_string(), "Sol Ring".to_string()]
-                .into_iter()
-                .collect::<HashSet<_>>()
-        );
-        assert_eq!(
             watched.to_json(),
             serde_json::json!({
                 "cards_seen": ["Lightning Bolt", "Sol Ring"],
@@ -1789,7 +1781,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_cli_watch_card_repeats_without_splitting_or_normalizing_names() {
+    fn parse_cli_watch_card_trims_whitespace_without_splitting_names() {
         let args: Vec<String> = [
             "ai-commander",
             "--watch-card",
@@ -1811,7 +1803,7 @@ mod tests {
             [
                 "Xira, the Golden Sting",
                 "Éomer, Marshal of Rohan",
-                " Sol Ring "
+                "Sol Ring"
             ]
             .into_iter()
             .map(str::to_string)
